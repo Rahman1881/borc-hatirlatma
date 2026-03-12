@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title Borç Hatırlatma - Kurulum
+title Çark Petrol - Kurulum
 
 echo ============================================
-echo    BORC HATIRLATMA SISTEMI - KURULUM
+echo    CARK PETROL - KURULUM
 echo ============================================
 echo.
 
@@ -26,6 +26,26 @@ if %errorlevel% neq 0 (
 
 echo [OK] Node.js bulundu:
 node --version
+echo.
+
+:: Check if Git is installed
+where git >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [HATA] Git bulunamadi!
+    echo.
+    echo Git indirmek icin asagidaki adrese gidin:
+    echo https://git-scm.com/download/win
+    echo.
+    echo Kurulumda tum secenekleri varsayilan birakin, Next Next yapin.
+    echo.
+    echo Git kurduktan sonra bu dosyayi tekrar calistirin.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo [OK] Git bulundu:
+git --version
 echo.
 
 echo Gerekli paketler yukleniyor... (ilk seferde 2-3 dakika surebilir)
@@ -57,5 +77,7 @@ echo ============================================
 echo.
 echo Simdi "baslat.bat" dosyasina cift tiklayarak
 echo programi calistirabilirsiniz.
+echo.
+echo Guncelleme icin "guncelle.bat" dosyasini kullanin.
 echo.
 pause
