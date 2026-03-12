@@ -7,26 +7,48 @@ echo    CARK PETROL - KURULUM
 echo ============================================
 echo.
 
-:: Check if Node.js is installed
+:: Check and install Node.js
 where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [HATA] Node.js bulunamadi!
+    echo Node.js bulunamadi, otomatik kuruluyor...
     echo.
-    echo Node.js indirmek icin asagidaki adrese gidin:
-    echo https://nodejs.org
+    winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+    if %errorlevel% neq 0 (
+        echo.
+        echo [HATA] Node.js otomatik kurulamadi.
+        echo Lutfen manuel kurun: https://nodejs.org
+        pause
+        exit /b 1
+    )
     echo.
-    echo "LTS" yazan yesil butona tiklayin ve kurun.
-    echo Kurulumda tum secenekleri varsayilan birakin, Next Next yapin.
-    echo.
-    echo Node.js kurduktan sonra bu dosyayi tekrar calistirin.
+    echo [OK] Node.js kuruldu! Degisikliklerin aktif olmasi icin
+    echo bu pencereyi kapatip kur.bat'i tekrar calistirin.
     echo.
     pause
-    exit /b 1
+    exit /b 0
 )
 
 echo [OK] Node.js bulundu:
 node --version
 echo.
+
+:: Check and install Git
+where git >nul 2>nul
+if %errorlevel% neq 0 (
+    echo Git bulunamadi, otomatik kuruluyor...
+    echo.
+    winget install Git.Git --accept-source-agreements --accept-package-agreements
+    if %errorlevel% neq 0 (
+        echo.
+        echo [UYARI] Git otomatik kurulamadi.
+        echo Guncellemeler icin sonra manuel kurabilirsiniz: https://git-scm.com
+        echo Simdilik devam ediyoruz...
+        echo.
+    ) else (
+        echo [OK] Git kuruldu!
+        echo.
+    )
+)
 
 echo Gerekli paketler yukleniyor... (ilk seferde 2-3 dakika surebilir)
 echo.
