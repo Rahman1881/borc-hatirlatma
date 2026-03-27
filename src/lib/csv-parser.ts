@@ -13,6 +13,12 @@ export interface CustomerRow {
   email: string;
   city: string;
   district: string;
+  // Siber Excel ek alanları
+  ozelKod?: string;
+  toplamAlacak?: number;
+  tarihliBakiye?: number;
+  sonDurum?: number;
+  toplamRisk?: number;
 }
 
 function parseTurkishNumber(value: string | number | null | undefined): number {
@@ -39,6 +45,18 @@ function normalizePhone(phone: string | number | null | undefined): string {
 function str(val: unknown): string {
   if (val === null || val === undefined) return "";
   return String(val).trim();
+}
+
+// .xls dosyalarında Windows-1254 (Türkçe) encoding Latin-1 olarak okunuyor.
+// Bu fonksiyon yanlış okunan karakterleri düzeltir.
+function fixTurkishEncoding(text: string): string {
+  return text
+    .replace(/\u00DD/g, "İ")  // Ý → İ
+    .replace(/\u00FD/g, "ı")  // ý → ı
+    .replace(/\u00DE/g, "Ş")  // Þ → Ş
+    .replace(/\u00FE/g, "ş")  // þ → ş
+    .replace(/\u00D0/g, "Ğ")  // Ð → Ğ
+    .replace(/\u00F0/g, "ğ"); // ð → ğ
 }
 
 // Column name mapping (xlsx headers -> our fields)
@@ -95,6 +113,86 @@ export function parseXLSX(buffer: Buffer): CustomerRow[] {
       email: str(mapped.email) || str(mapped.emailAlt),
       city: str(mapped.city),
       district: str(mapped.district),
+    });
+  }
+
+  return rows;
+}
+
+export function parseSiberXLSX(buffer: Buffer): CustomerRow[] {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  // Read as array of arrays to handle the complex format
+  const allRows = XLSX.utils.sheet_to_json<(string | number | null)[]>(ws, {
+    header: 1,
+    defval: null,
+  });
+
+  const rows: CustomerRow[] = [];
+
+  // Data starts around row 10 (index 9), skip header/metadata rows
+  // Find the first data row by looking for rows with a value in column A that looks like a code
+  let dataStarted = false;
+  for (let i = 0; i < allRows.length; i++) {
+    const row = allRows[i];
+    if (!row || row.length === 0) continue;
+
+    const colA = row[0]; // Cari Kodu
+    const colB = row[1]; // Unvani
+    const colG = row[6]; // Toplam Borc
+
+    // Skip metadata/header rows - data rows have a customer code in column A and a name in B
+    if (!colA || !colB) continue;
+    const nameStr = fixTurkishEncoding(str(colB));
+    const codeStr = fixTurkishEncoding(str(colA));
+
+    // Skip known header/metadata rows
+    if (
+      nameStr.includes("ÖZÇIFTÇI") ||
+      nameStr.includes("OZÇIFTÇI") ||
+      nameStr.includes("ÇARK") ||
+      nameStr.includes("Unvan") ||
+      nameStr.includes("Hesap") ||
+      nameStr.includes("Borçlu") ||
+      nameStr.includes("BorcList") ||
+      nameStr.includes("TOPLAM") ||
+      nameStr.includes("Toplam") ||
+      codeStr.includes("Cari") ||
+      codeStr.includes("TOPLAM")
+    )
+      continue;
+
+    // Skip if colG (Toplam Borc) is not a number-like value (filters out header rows)
+    if (colG === null || colG === undefined) continue;
+    const toplamBorc = parseTurkishNumber(colG);
+
+    // This looks like a valid data row
+    dataStarted = true;
+
+    // Phone normalization for Siber format: -5552854368 -> 905552854368
+    let phone = str(row[5]);
+    // Remove leading dash(es)
+    phone = phone.replace(/^-+/, "");
+    phone = normalizePhone(phone);
+
+    rows.push({
+      code: codeStr,
+      filoCode: "",
+      name: nameStr,
+      filoGroup: fixTurkishEncoding(str(row[3])), // Grup
+      totalDebt: toplamBorc,
+      overdueDebt: 0,
+      creditLimit: 0,
+      fuelAccess: "",
+      phone,
+      email: "",
+      city: "",
+      district: "",
+      ozelKod: fixTurkishEncoding(str(row[4])), // Ozel Kod
+      toplamAlacak: parseTurkishNumber(row[7]), // Toplam Alacak
+      tarihliBakiye: parseTurkishNumber(row[8]), // Tarihli Bakiye
+      sonDurum: parseTurkishNumber(row[9]), // Son Durum
+      toplamRisk: parseTurkishNumber(row[10]), // Toplam Risk
     });
   }
 

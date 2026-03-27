@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import getDb from "@/lib/db";
-import { parseCSV, parseXLSX, CustomerRow } from "@/lib/csv-parser";
+import { parseCSV, parseXLSX, parseSiberXLSX, CustomerRow } from "@/lib/csv-parser";
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File;
+    const source = (formData.get("source") as string) || "yakit";
     if (!file) {
       return NextResponse.json({ error: "Dosya bulunamadı" }, { status: 400 });
     }
@@ -14,7 +15,10 @@ export async function POST(req: NextRequest) {
     const fileName = file.name.toLowerCase();
     let rows: CustomerRow[];
 
-    if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+    if (source === "siber") {
+      // Siber Excel - özel format
+      rows = parseSiberXLSX(buffer);
+    } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
       rows = parseXLSX(buffer);
     } else {
       const decoder = new TextDecoder("windows-1254");
@@ -39,8 +43,8 @@ export async function POST(req: NextRequest) {
     db.exec("DELETE FROM customers");
 
     const insert = db.prepare(`
-      INSERT INTO customers (code, filo_code, name, phone, total_debt, overdue_debt, credit_limit, city, district, email, fuel_access, filo_group)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO customers (code, filo_code, name, phone, total_debt, overdue_debt, credit_limit, city, district, email, fuel_access, filo_group, ozel_kod, toplam_alacak, tarihli_bakiye, son_durum, toplam_risk, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertMany = db.transaction((items: CustomerRow[]) => {
@@ -57,12 +61,23 @@ export async function POST(req: NextRequest) {
           row.district,
           row.email,
           row.fuelAccess,
-          row.filoGroup
+          row.filoGroup,
+          row.ozelKod || null,
+          row.toplamAlacak || 0,
+          row.tarihliBakiye || 0,
+          row.sonDurum || 0,
+          row.toplamRisk || 0,
+          source
         );
       }
     });
 
     insertMany(rows);
+
+    // Save active source
+    db.prepare(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_source', ?)"
+    ).run(source);
 
     // Log the upload
     db.prepare(
@@ -71,6 +86,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      source,
       imported: rows.length,
       withPhone: rows.filter((r) => r.phone).length,
       withDebt: rows.filter((r) => r.totalDebt > 0).length,

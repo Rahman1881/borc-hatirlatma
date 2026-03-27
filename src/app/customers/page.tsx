@@ -26,6 +26,12 @@ interface Customer {
   city: string;
   district: string;
   filo_group: string;
+  ozel_kod: string;
+  toplam_alacak: number;
+  tarihli_bakiye: number;
+  son_durum: number;
+  toplam_risk: number;
+  source: string;
 }
 
 interface Stats {
@@ -147,6 +153,7 @@ export default function CustomersPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [activeSource, setActiveSource] = useState<string>("yakit");
 
   const fetchCustomers = useCallback(() => {
     const params = new URLSearchParams({
@@ -161,6 +168,7 @@ export default function CustomersPage() {
         setCustomers(data.customers);
         setTotal(data.total);
         setStats(data.stats);
+        if (data.activeSource) setActiveSource(data.activeSource);
       });
   }, [filter, search, page]);
 
@@ -168,13 +176,14 @@ export default function CustomersPage() {
     fetchCustomers();
   }, [fetchCustomers]);
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, source: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("source", source);
 
     try {
       const res = await fetch("/api/upload", { method: "POST", body: formData });
@@ -212,22 +221,41 @@ export default function CustomersPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Müşteriler</h2>
           <p className="text-muted-foreground">
-            CSV dosyası yükleyin ve müşterilerinizi yönetin. Düzenlemek için hücreye tıklayın.
+            Excel dosyası yükleyin ve müşterilerinizi yönetin. Düzenlemek için hücreye tıklayın.
           </p>
+          {activeSource && (
+            <Badge variant={activeSource === "siber" ? "default" : "secondary"} className="mt-1">
+              Aktif: {activeSource === "siber" ? "Siber Excel" : "Yakıt Ofisi Excel"}
+            </Badge>
+          )}
         </div>
-        <div>
+        <div className="flex gap-2">
           <Button
+            variant="outline"
             disabled={uploading}
-            onClick={() => document.getElementById("csv-upload")?.click()}
+            onClick={() => document.getElementById("yakit-upload")?.click()}
           >
-            {uploading ? "Yükleniyor..." : "CSV Yükle"}
+            {uploading ? "Yükleniyor..." : "Yakıt Ofisi Excel"}
           </Button>
           <input
-            id="csv-upload"
+            id="yakit-upload"
             type="file"
-            accept=".csv,.xlsx"
+            accept=".csv,.xlsx,.xls"
             className="hidden"
-            onChange={handleUpload}
+            onChange={(e) => handleUpload(e, "yakit")}
+          />
+          <Button
+            disabled={uploading}
+            onClick={() => document.getElementById("siber-upload")?.click()}
+          >
+            {uploading ? "Yükleniyor..." : "Siber Excel"}
+          </Button>
+          <input
+            id="siber-upload"
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(e) => handleUpload(e, "siber")}
           />
         </div>
       </div>
@@ -276,101 +304,175 @@ export default function CustomersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Müşteri Adı</TableHead>
-                <TableHead>Telefon</TableHead>
-                <TableHead className="text-right">Toplam Borç</TableHead>
-                <TableHead className="text-right">Vadesi Geçmiş</TableHead>
-                <TableHead>Şehir</TableHead>
-                <TableHead>Grup</TableHead>
+                {activeSource === "siber" ? (
+                  <>
+                    <TableHead>Cari Kodu</TableHead>
+                    <TableHead>Unvanı</TableHead>
+                    <TableHead>Telefon</TableHead>
+                    <TableHead>Grup</TableHead>
+                    <TableHead>Özel Kod</TableHead>
+                    <TableHead className="text-right">Toplam Borç</TableHead>
+                    <TableHead className="text-right">Toplam Alacak</TableHead>
+                    <TableHead className="text-right">Tarihli Bakiye</TableHead>
+                    <TableHead className="text-right">Son Durum</TableHead>
+                    <TableHead className="text-right">Toplam Risk</TableHead>
+                  </>
+                ) : (
+                  <>
+                    <TableHead>Müşteri Adı</TableHead>
+                    <TableHead>Telefon</TableHead>
+                    <TableHead className="text-right">Toplam Borç</TableHead>
+                    <TableHead className="text-right">Vadesi Geçmiş</TableHead>
+                    <TableHead>Şehir</TableHead>
+                    <TableHead>Grup</TableHead>
+                  </>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
               {customers.map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell className="font-medium">
-                    <EditableCell value={c.name} customerId={c.id} field="name" onSaved={fetchCustomers}>
-                      {c.name}
-                    </EditableCell>
-                  </TableCell>
-                  <TableCell>
-                    <EditableCell
-                      value={c.phone}
-                      customerId={c.id}
-                      field="phone"
-                      className={
-                        c.phone
-                          ? c.phone.startsWith("905")
-                            ? "text-sm"
-                            : "text-sm text-red-500"
-                          : "text-xs text-muted-foreground"
-                      }
-                      onSaved={fetchCustomers}
-                    >
-                      {c.phone ? (
-                        c.phone.startsWith("905") ? (
-                          c.phone
-                        ) : (
-                          c.phone
-                        )
-                      ) : (
-                        "Telefon yok"
-                      )}
-                    </EditableCell>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <EditableCell
-                      value={c.total_debt}
-                      customerId={c.id}
-                      field="total_debt"
-                      className={
-                        c.total_debt > 0
-                          ? "text-orange-600 font-medium"
-                          : "text-muted-foreground"
-                      }
-                      onSaved={fetchCustomers}
-                    >
-                      {formatMoney(c.total_debt)} TL
-                    </EditableCell>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <EditableCell
-                      value={c.overdue_debt}
-                      customerId={c.id}
-                      field="overdue_debt"
-                      className={
-                        c.overdue_debt > 0
-                          ? "text-red-600 font-medium"
-                          : "text-muted-foreground"
-                      }
-                      onSaved={fetchCustomers}
-                    >
-                      {formatMoney(c.overdue_debt)} TL
-                    </EditableCell>
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    <EditableCell value={c.city} customerId={c.id} field="city" onSaved={fetchCustomers}>
-                      {c.city || "-"}
-                      {c.district ? ` / ${c.district}` : ""}
-                    </EditableCell>
-                  </TableCell>
-                  <TableCell>
-                    <EditableCell value={c.filo_group} customerId={c.id} field="filo_group" onSaved={fetchCustomers}>
-                      {c.filo_group ? (
+                  {activeSource === "siber" ? (
+                    <>
+                      <TableCell className="text-sm font-mono">
+                        {c.code || "-"}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        <EditableCell value={c.name} customerId={c.id} field="name" onSaved={fetchCustomers}>
+                          {c.name}
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell>
+                        <EditableCell
+                          value={c.phone}
+                          customerId={c.id}
+                          field="phone"
+                          className={
+                            c.phone
+                              ? c.phone.startsWith("905")
+                                ? "text-sm"
+                                : "text-sm text-red-500"
+                              : "text-xs text-muted-foreground"
+                          }
+                          onSaved={fetchCustomers}
+                        >
+                          {c.phone || "Telefon yok"}
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell>
                         <Badge variant="outline" className="text-xs">
-                          {c.filo_group}
+                          {c.filo_group || "-"}
                         </Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
-                      )}
-                    </EditableCell>
-                  </TableCell>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {c.ozel_kod || "-"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={c.total_debt > 0 ? "text-orange-600 font-medium" : "text-muted-foreground"}>
+                          {formatMoney(c.total_debt)} TL
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={c.toplam_alacak > 0 ? "text-green-600 font-medium" : "text-muted-foreground"}>
+                          {formatMoney(c.toplam_alacak)} TL
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={c.tarihli_bakiye > 0 ? "text-orange-600 font-medium" : "text-muted-foreground"}>
+                          {formatMoney(c.tarihli_bakiye)} TL
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={c.son_durum > 0 ? "text-red-600 font-medium" : "text-muted-foreground"}>
+                          {formatMoney(c.son_durum)} TL
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={c.toplam_risk > 0 ? "text-purple-600 font-medium" : "text-muted-foreground"}>
+                          {formatMoney(c.toplam_risk)} TL
+                        </span>
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell className="font-medium">
+                        <EditableCell value={c.name} customerId={c.id} field="name" onSaved={fetchCustomers}>
+                          {c.name}
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell>
+                        <EditableCell
+                          value={c.phone}
+                          customerId={c.id}
+                          field="phone"
+                          className={
+                            c.phone
+                              ? c.phone.startsWith("905")
+                                ? "text-sm"
+                                : "text-sm text-red-500"
+                              : "text-xs text-muted-foreground"
+                          }
+                          onSaved={fetchCustomers}
+                        >
+                          {c.phone || "Telefon yok"}
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <EditableCell
+                          value={c.total_debt}
+                          customerId={c.id}
+                          field="total_debt"
+                          className={
+                            c.total_debt > 0
+                              ? "text-orange-600 font-medium"
+                              : "text-muted-foreground"
+                          }
+                          onSaved={fetchCustomers}
+                        >
+                          {formatMoney(c.total_debt)} TL
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <EditableCell
+                          value={c.overdue_debt}
+                          customerId={c.id}
+                          field="overdue_debt"
+                          className={
+                            c.overdue_debt > 0
+                              ? "text-red-600 font-medium"
+                              : "text-muted-foreground"
+                          }
+                          onSaved={fetchCustomers}
+                        >
+                          {formatMoney(c.overdue_debt)} TL
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        <EditableCell value={c.city} customerId={c.id} field="city" onSaved={fetchCustomers}>
+                          {c.city || "-"}
+                          {c.district ? ` / ${c.district}` : ""}
+                        </EditableCell>
+                      </TableCell>
+                      <TableCell>
+                        <EditableCell value={c.filo_group} customerId={c.id} field="filo_group" onSaved={fetchCustomers}>
+                          {c.filo_group ? (
+                            <Badge variant="outline" className="text-xs">
+                              {c.filo_group}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">-</span>
+                          )}
+                        </EditableCell>
+                      </TableCell>
+                    </>
+                  )}
                 </TableRow>
               ))}
               {customers.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={activeSource === "siber" ? 10 : 6} className="text-center py-8">
                     <p className="text-muted-foreground">
-                      Henüz müşteri yok. CSV dosyası yükleyin.
+                      Henüz müşteri yok. Excel dosyası yükleyin.
                     </p>
                   </TableCell>
                 </TableRow>

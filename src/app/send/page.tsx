@@ -24,6 +24,10 @@ interface Customer {
   overdue_debt: number;
   city: string;
   filo_group: string;
+  toplam_alacak: number;
+  tarihli_bakiye: number;
+  son_durum: number;
+  toplam_risk: number;
 }
 
 interface Template {
@@ -59,6 +63,7 @@ export default function SendPage() {
   const [groups, setGroups] = useState<{ filo_group: string; count: number }[]>([]);
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
   const [minDebt, setMinDebt] = useState(0);
+  const [activeSource, setActiveSource] = useState<string>("yakit");
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -88,6 +93,7 @@ export default function SendPage() {
         setCustomers(data.customers);
         setTotal(data.total);
         if (data.groups) setGroups(data.groups);
+        if (data.activeSource) setActiveSource(data.activeSource);
       });
   }, [page, filter, search, selectedGroups, minDebt]);
 
@@ -126,7 +132,9 @@ export default function SendPage() {
     }
   };
 
-  const handleSend = async () => {
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const handleSendClick = async () => {
     if (selectedIds.size === 0) {
       toast.error("Lütfen en az bir müşteri seçin");
       return;
@@ -135,7 +143,22 @@ export default function SendPage() {
       toast.error("Lütfen bir mesaj şablonu seçin");
       return;
     }
+    try {
+      const res = await fetch("/api/whatsapp");
+      const data = await res.json();
+      if (data.status !== "ready") {
+        toast.error("WhatsApp bağlı değil! Lütfen önce Ayarlar sayfasından WhatsApp bağlantısını yapın.");
+        return;
+      }
+    } catch {
+      toast.error("WhatsApp durumu kontrol edilemedi.");
+      return;
+    }
+    setShowConfirm(true);
+  };
 
+  const handleConfirmSend = async () => {
+    setShowConfirm(false);
     setSending(true);
     try {
       const res = await fetch("/api/messages", {
@@ -332,9 +355,21 @@ export default function SendPage() {
                     <TableHead className="w-12">Seç</TableHead>
                     <TableHead>Müşteri</TableHead>
                     <TableHead>Telefon</TableHead>
-                    <TableHead className="text-right">Borç</TableHead>
-                    <TableHead className="text-right">Vadesi Geçmiş</TableHead>
-                    <TableHead>Şehir</TableHead>
+                    {activeSource === "siber" ? (
+                      <>
+                        <TableHead className="text-right">Toplam Borç</TableHead>
+                        <TableHead className="text-right">Toplam Alacak</TableHead>
+                        <TableHead className="text-right">Tarihli Bakiye</TableHead>
+                        <TableHead className="text-right">Son Durum</TableHead>
+                        <TableHead className="text-right">Toplam Risk</TableHead>
+                      </>
+                    ) : (
+                      <>
+                        <TableHead className="text-right">Borç</TableHead>
+                        <TableHead className="text-right">Vadesi Geçmiş</TableHead>
+                        <TableHead>Şehir</TableHead>
+                      </>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -344,30 +379,52 @@ export default function SendPage() {
                       className="cursor-pointer"
                       onClick={() => toggleSelect(c.id)}
                     >
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={selectedIds.has(c.id)}
                           onChange={() => toggleSelect(c.id)}
-                          className="w-4 h-4 rounded"
+                          className="w-4 h-4 rounded cursor-pointer"
                         />
                       </TableCell>
                       <TableCell className="font-medium">{c.name}</TableCell>
                       <TableCell className={`text-sm ${c.phone.startsWith("905") ? "" : "text-red-500"}`}>{c.phone}</TableCell>
-                      <TableCell className="text-right text-orange-600">
-                        {formatMoney(c.total_debt)} TL
-                      </TableCell>
-                      <TableCell className="text-right text-red-600">
-                        {formatMoney(c.overdue_debt)} TL
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {c.city}
-                      </TableCell>
+                      {activeSource === "siber" ? (
+                        <>
+                          <TableCell className="text-right text-orange-600">
+                            {formatMoney(c.total_debt)} TL
+                          </TableCell>
+                          <TableCell className="text-right text-green-600">
+                            {formatMoney(c.toplam_alacak)} TL
+                          </TableCell>
+                          <TableCell className="text-right text-orange-600">
+                            {formatMoney(c.tarihli_bakiye)} TL
+                          </TableCell>
+                          <TableCell className="text-right text-red-600 font-medium">
+                            {formatMoney(c.son_durum)} TL
+                          </TableCell>
+                          <TableCell className="text-right text-purple-600">
+                            {formatMoney(c.toplam_risk)} TL
+                          </TableCell>
+                        </>
+                      ) : (
+                        <>
+                          <TableCell className="text-right text-orange-600">
+                            {formatMoney(c.total_debt)} TL
+                          </TableCell>
+                          <TableCell className="text-right text-red-600">
+                            {formatMoney(c.overdue_debt)} TL
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {c.city}
+                          </TableCell>
+                        </>
+                      )}
                     </TableRow>
                   ))}
                   {customers.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-8">
+                      <TableCell colSpan={activeSource === "siber" ? 8 : 6} className="text-center py-8">
                         <p className="text-muted-foreground">
                           Bu filtreye uygun müşteri bulunamadı
                         </p>
@@ -468,7 +525,7 @@ export default function SendPage() {
                 <Button
                   className="w-full"
                   size="lg"
-                  onClick={handleSend}
+                  onClick={handleSendClick}
                   disabled={
                     sending || selectedIds.size === 0 || !selectedTemplate
                   }
@@ -482,6 +539,58 @@ export default function SendPage() {
           </Card>
         </div>
       </div>
+
+      {/* Onay Modalı */}
+      {showConfirm && previewTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowConfirm(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold">Mesaj Gönderim Onayı</h3>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Gönderilecek kişi sayısı:</span>
+                <span className="font-bold text-lg">{selectedIds.size} kişi</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Şablon:</span>
+                <span className="font-medium">{previewTemplate.name}</span>
+              </div>
+            </div>
+
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground mb-1">Gönderilecek mesaj:</p>
+              <p className="text-sm whitespace-pre-wrap">
+                {previewTemplate.body
+                  .replace("{isim}", "Müşteri Adı")
+                  .replace("{tutar}", "X.XXX,XX")
+                  .replace("{vadeli_borc}", "X.XXX,XX")}
+              </p>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p className="text-sm text-amber-800">
+                <strong>{selectedIds.size}</strong> kişiye WhatsApp mesajı gönderilecektir. Bu işlem geri alınamaz.
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setShowConfirm(false)}
+              >
+                İptal
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleConfirmSend}
+              >
+                Onaylıyorum, Gönder
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

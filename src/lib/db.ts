@@ -31,6 +31,12 @@ function initDb(db: Database.Database) {
       email TEXT,
       fuel_access TEXT,
       filo_group TEXT,
+      ozel_kod TEXT,
+      toplam_alacak REAL DEFAULT 0,
+      tarihli_bakiye REAL DEFAULT 0,
+      son_durum REAL DEFAULT 0,
+      toplam_risk REAL DEFAULT 0,
+      source TEXT DEFAULT 'yakit',
       created_at TEXT DEFAULT (datetime('now','localtime')),
       updated_at TEXT DEFAULT (datetime('now','localtime'))
     );
@@ -70,6 +76,28 @@ function initDb(db: Database.Database) {
       uploaded_at TEXT DEFAULT (datetime('now','localtime'))
     );
   `);
+
+  // Add Siber Excel columns if they don't exist (migration)
+  const columns = db.prepare("PRAGMA table_info(customers)").all() as { name: string }[];
+  const columnNames = columns.map((c) => c.name);
+  if (!columnNames.includes("ozel_kod")) {
+    db.exec("ALTER TABLE customers ADD COLUMN ozel_kod TEXT");
+  }
+  if (!columnNames.includes("toplam_alacak")) {
+    db.exec("ALTER TABLE customers ADD COLUMN toplam_alacak REAL DEFAULT 0");
+  }
+  if (!columnNames.includes("tarihli_bakiye")) {
+    db.exec("ALTER TABLE customers ADD COLUMN tarihli_bakiye REAL DEFAULT 0");
+  }
+  if (!columnNames.includes("son_durum")) {
+    db.exec("ALTER TABLE customers ADD COLUMN son_durum REAL DEFAULT 0");
+  }
+  if (!columnNames.includes("toplam_risk")) {
+    db.exec("ALTER TABLE customers ADD COLUMN toplam_risk REAL DEFAULT 0");
+  }
+  if (!columnNames.includes("source")) {
+    db.exec("ALTER TABLE customers ADD COLUMN source TEXT DEFAULT 'yakit'");
+  }
 
   // Default template
   const templateCount = db.prepare("SELECT COUNT(*) as count FROM templates").get() as { count: number };

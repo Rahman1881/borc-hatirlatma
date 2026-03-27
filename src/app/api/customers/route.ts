@@ -100,6 +100,12 @@ export async function GET(req: NextRequest) {
     )
     .all() as { filo_group: string; count: number }[];
 
+  // Get active source
+  const sourceSetting = db
+    .prepare("SELECT value FROM settings WHERE key = 'active_source'")
+    .get() as { value: string } | undefined;
+  const activeSource = sourceSetting?.value || "yakit";
+
   return NextResponse.json({
     customers,
     total: total.count,
@@ -107,5 +113,6 @@ export async function GET(req: NextRequest) {
     limit,
     stats,
     groups,
+    activeSource,
   });
 }

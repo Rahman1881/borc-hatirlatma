@@ -5,6 +5,37 @@ import { sendBulkMessages, fillTemplate } from "@/lib/whatsapp";
 export async function GET(req: NextRequest) {
   const db = getDb();
   const url = new URL(req.url);
+  const view = url.searchParams.get("view") || "list";
+  const date = url.searchParams.get("date") || "";
+
+  // Tarihe göre gruplu özet
+  if (view === "dates") {
+    const dates = db.prepare(`
+      SELECT
+        date(sent_at) as date,
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        MIN(sent_at) as first_at,
+        MAX(sent_at) as last_at
+      FROM messages
+      GROUP BY date(sent_at)
+      ORDER BY date(sent_at) DESC
+    `).all();
+    return NextResponse.json({ dates });
+  }
+
+  // Belirli bir tarihin mesajları
+  if (date) {
+    const messages = db.prepare(`
+      SELECT * FROM messages
+      WHERE date(sent_at) = ?
+      ORDER BY sent_at DESC
+    `).all(date);
+    return NextResponse.json({ messages, total: messages.length });
+  }
+
+  // Eski uyumluluk: sayfalı liste
   const page = parseInt(url.searchParams.get("page") || "1");
   const limit = parseInt(url.searchParams.get("limit") || "50");
   const offset = (page - 1) * limit;
