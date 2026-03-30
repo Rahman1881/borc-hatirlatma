@@ -83,6 +83,10 @@ export async function POST(req: NextRequest) {
     phone: string;
     total_debt: number;
     overdue_debt: number;
+    toplam_alacak: number;
+    tarihli_bakiye: number;
+    son_durum: number;
+    toplam_risk: number;
   }[];
 
   const bulkMessages = customers.map((customer) => ({
@@ -91,6 +95,10 @@ export async function POST(req: NextRequest) {
       name: customer.name,
       totalDebt: customer.total_debt,
       overdueDebt: customer.overdue_debt,
+      toplamAlacak: customer.toplam_alacak,
+      tarihliBakiye: customer.tarihli_bakiye,
+      sonDurum: customer.son_durum,
+      toplamRisk: customer.toplam_risk,
     }),
     customerId: customer.id,
     customerName: customer.name,

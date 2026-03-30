@@ -168,12 +168,24 @@ export async function sendBulkMessages(
 
 export function fillTemplate(
   template: string,
-  data: { name: string; totalDebt: number; overdueDebt: number }
+  data: {
+    name: string;
+    totalDebt: number;
+    overdueDebt: number;
+    toplamAlacak?: number;
+    tarihliBakiye?: number;
+    sonDurum?: number;
+    toplamRisk?: number;
+  }
 ): string {
   return template
     .replace(/{isim}/g, data.name)
     .replace(/{tutar}/g, formatMoney(data.totalDebt))
-    .replace(/{vadeli_borc}/g, formatMoney(data.overdueDebt));
+    .replace(/{vadeli_borc}/g, formatMoney(data.overdueDebt))
+    .replace(/{toplam_alacak}/g, formatMoney(data.toplamAlacak ?? 0))
+    .replace(/{tarihli_bakiye}/g, formatMoney(data.tarihliBakiye ?? 0))
+    .replace(/{son_durum}/g, formatMoney(data.sonDurum ?? 0))
+    .replace(/{toplam_risk}/g, formatMoney(data.toplamRisk ?? 0));
 }
 
 function formatMoney(amount: number): string {

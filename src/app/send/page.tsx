@@ -498,9 +498,13 @@ export default function SendPage() {
                 <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                   <p className="text-sm whitespace-pre-wrap">
                     {previewTemplate.body
-                      .replace("{isim}", "Ahmet Yılmaz")
-                      .replace("{tutar}", "5.000,00")
-                      .replace("{vadeli_borc}", "3.200,00")}
+                      .replace(/{isim}/g, "Ahmet Yılmaz")
+                      .replace(/{tutar}/g, "5.000,00")
+                      .replace(/{vadeli_borc}/g, "3.200,00")
+                      .replace(/{toplam_alacak}/g, "4.500,00")
+                      .replace(/{tarihli_bakiye}/g, "1.250,00")
+                      .replace(/{son_durum}/g, "2.100,00")
+                      .replace(/{toplam_risk}/g, "6.300,00")}
                   </p>
                 </div>
               </CardContent>
@@ -561,9 +565,13 @@ export default function SendPage() {
               <p className="text-xs text-muted-foreground mb-1">Gönderilecek mesaj:</p>
               <p className="text-sm whitespace-pre-wrap">
                 {previewTemplate.body
-                  .replace("{isim}", "Müşteri Adı")
-                  .replace("{tutar}", "X.XXX,XX")
-                  .replace("{vadeli_borc}", "X.XXX,XX")}
+                  .replace(/{isim}/g, "Müşteri Adı")
+                  .replace(/{tutar}/g, "X.XXX,XX")
+                  .replace(/{vadeli_borc}/g, "X.XXX,XX")
+                  .replace(/{toplam_alacak}/g, "X.XXX,XX")
+                  .replace(/{tarihli_bakiye}/g, "X.XXX,XX")
+                  .replace(/{son_durum}/g, "X.XXX,XX")
+                  .replace(/{toplam_risk}/g, "X.XXX,XX")}
               </p>
             </div>
 
