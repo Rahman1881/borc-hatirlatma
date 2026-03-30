@@ -1,5 +1,6 @@
 import { Client, LocalAuth } from "whatsapp-web.js";
 import path from "path";
+import fs from "fs";
 import QRCode from "qrcode";
 
 export type WAStatus = "disconnected" | "qr" | "loading" | "ready";
@@ -83,7 +84,13 @@ export function disconnectWhatsApp(): void {
   if (client) {
     client.destroy();
     client = null;
-    state = { status: "disconnected", qrDataUrl: null, info: null };
+  }
+  state = { status: "disconnected", qrDataUrl: null, info: null };
+
+  // Kayıtlı oturumu sil - böylece tekrar bağlanınca yeni QR çıkar
+  const sessionPath = getSessionPath();
+  if (fs.existsSync(sessionPath)) {
+    fs.rmSync(sessionPath, { recursive: true, force: true });
   }
 }
 
