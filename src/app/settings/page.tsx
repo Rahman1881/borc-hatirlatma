@@ -64,6 +64,8 @@ export default function SettingsPage() {
   };
 
   const handleDisconnect = async () => {
+    // UI'ı hemen güncelle, API cevabını bekleme
+    setWaState({ status: "disconnected", qrDataUrl: null, info: null });
     try {
       await fetch("/api/whatsapp", {
         method: "POST",
