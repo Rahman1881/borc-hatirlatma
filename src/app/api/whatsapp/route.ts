@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === "disconnect") {
-    disconnectWhatsApp();
+    await disconnectWhatsApp();
     return NextResponse.json({ success: true, message: "Bağlantı kesildi" });
   }
 

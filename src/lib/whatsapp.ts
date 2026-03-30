@@ -80,15 +80,25 @@ export function initWhatsApp(): void {
   client.initialize();
 }
 
-export function disconnectWhatsApp(): void {
+export async function disconnectWhatsApp(): Promise<void> {
+  // Önce session klasörünü sil - destroy() yazmadan önce
+  const sessionPath = getSessionPath();
+  if (fs.existsSync(sessionPath)) {
+    fs.rmSync(sessionPath, { recursive: true, force: true });
+  }
+
   if (client) {
-    client.destroy();
+    try {
+      await client.destroy();
+    } catch {
+      // destroy hatası önemsiz, devam et
+    }
     client = null;
   }
+
   state = { status: "disconnected", qrDataUrl: null, info: null };
 
-  // Kayıtlı oturumu sil - böylece tekrar bağlanınca yeni QR çıkar
-  const sessionPath = getSessionPath();
+  // destroy sonrası tekrar yazılmış olabilir, bir kez daha sil
   if (fs.existsSync(sessionPath)) {
     fs.rmSync(sessionPath, { recursive: true, force: true });
   }
