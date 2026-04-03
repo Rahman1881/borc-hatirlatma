@@ -24,6 +24,9 @@ export default function SettingsPage() {
   const [businessName, setBusinessName] = useState("");
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [hasLogo, setHasLogo] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
   const fetchStatus = useCallback(() => {
     fetch("/api/whatsapp")
@@ -45,7 +48,48 @@ export default function SettingsPage() {
       .then((data) => {
         if (data.business_name) setBusinessName(data.business_name);
       });
+    fetch("/api/logo")
+      .then((r) => r.json())
+      .then((data) => {
+        setHasLogo(data.hasLogo);
+        if (data.hasLogo) setLogoPreview(`/api/logo?image=1&t=${Date.now()}`);
+      });
   }, []);
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoUploading(true);
+    const formData = new FormData();
+    formData.append("logo", file);
+    try {
+      const res = await fetch("/api/logo", { method: "POST", body: formData });
+      const data = await res.json();
+      if (data.error) {
+        toast.error(data.error);
+      } else {
+        setHasLogo(true);
+        setLogoPreview(URL.createObjectURL(file));
+        toast.success("Logo yüklendi. Artık mesajlarla birlikte gönderilecek.");
+      }
+    } catch {
+      toast.error("Logo yüklenirken hata oluştu");
+    } finally {
+      setLogoUploading(false);
+      e.target.value = "";
+    }
+  };
+
+  const handleLogoDelete = async () => {
+    try {
+      await fetch("/api/logo", { method: "DELETE" });
+      setHasLogo(false);
+      setLogoPreview(null);
+      toast.success("Logo kaldırıldı");
+    } catch {
+      toast.error("Logo kaldırılırken hata oluştu");
+    }
+  };
 
   const handleConnect = async () => {
     setConnecting(true);
@@ -211,6 +255,55 @@ export default function SettingsPage() {
                 placeholder="Petrol Ofisi İstasyonu"
               />
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Logo */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Şirket Logosu</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Logo yüklerseniz WhatsApp mesajları resim olarak logonuzla birlikte gönderilir. Mesaj metni resmin altında caption olarak görünür.
+            </p>
+
+            {logoPreview && (
+              <div className="border rounded-lg p-3 inline-block bg-muted/30">
+                <img
+                  src={logoPreview}
+                  alt="Şirket logosu"
+                  className="max-h-24 max-w-xs object-contain"
+                />
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                disabled={logoUploading}
+                onClick={() => document.getElementById("logo-upload")?.click()}
+              >
+                {logoUploading ? "Yükleniyor..." : hasLogo ? "Logoyu Değiştir" : "Logo Yükle"}
+              </Button>
+              {hasLogo && (
+                <Button variant="destructive" onClick={handleLogoDelete}>
+                  Logoyu Kaldır
+                </Button>
+              )}
+            </div>
+            <input
+              id="logo-upload"
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/webp"
+              className="hidden"
+              onChange={handleLogoUpload}
+            />
+            {hasLogo && (
+              <p className="text-xs text-green-700 font-medium">
+                ✓ Logo aktif — mesajlar logonuzla birlikte gönderilecek
+              </p>
+            )}
           </CardContent>
         </Card>
 

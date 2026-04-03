@@ -1,7 +1,9 @@
-import { Client, LocalAuth } from "whatsapp-web.js";
+import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 import path from "path";
 import fs from "fs";
 import QRCode from "qrcode";
+
+const LOGO_PATH = path.join(process.cwd(), "data", "logo-sirket.png");
 
 export type WAStatus = "disconnected" | "qr" | "loading" | "ready";
 
@@ -128,19 +130,24 @@ export async function sendWhatsAppMessage(
   }
 
   try {
-    // Format: 905xxxxxxxxx -> 905xxxxxxxxx@c.us
     let chatId = phone.replace(/\D/g, "");
     if (!chatId.endsWith("@c.us")) {
       chatId = `${chatId}@c.us`;
     }
 
-    // Check if number is on WhatsApp
     const isRegistered = await client.isRegisteredUser(chatId);
     if (!isRegistered) {
       return { success: false, error: "Bu numara WhatsApp kullanmıyor" };
     }
 
-    await client.sendMessage(chatId, body);
+    // Logo varsa resim + caption olarak gönder, yoksa sadece metin
+    if (fs.existsSync(LOGO_PATH)) {
+      const media = MessageMedia.fromFilePath(LOGO_PATH);
+      await client.sendMessage(chatId, media, { caption: body });
+    } else {
+      await client.sendMessage(chatId, body);
+    }
+
     return { success: true };
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : "Bilinmeyen hata";
