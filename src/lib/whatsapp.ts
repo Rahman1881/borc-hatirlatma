@@ -46,7 +46,20 @@ export function initWhatsApp(): void {
     },
   });
 
+  // 90 saniye içinde ready/qr gelmezse oturumu sil ve sıfırla
+  const loadingTimeout = setTimeout(async () => {
+    if (state.status === "loading") {
+      const sessionPath = getSessionPath();
+      const c = client;
+      client = null;
+      state = { status: "disconnected", qrDataUrl: null, info: null };
+      try { await Promise.race([c?.destroy(), new Promise(r => setTimeout(r, 5000))]); } catch { /* ignore */ }
+      try { if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }, 90000);
+
   client.on("qr", async (qr: string) => {
+    clearTimeout(loadingTimeout);
     const dataUrl = await QRCode.toDataURL(qr, { width: 300 });
     state = { status: "qr", qrDataUrl: dataUrl, info: null };
   });
@@ -56,6 +69,7 @@ export function initWhatsApp(): void {
   });
 
   client.on("ready", () => {
+    clearTimeout(loadingTimeout);
     const info = client?.info;
     state = {
       status: "ready",
@@ -71,10 +85,15 @@ export function initWhatsApp(): void {
   });
 
   client.on("auth_failure", () => {
+    clearTimeout(loadingTimeout);
     state = { status: "disconnected", qrDataUrl: null, info: null };
+    client = null;
+    // Bozuk oturumu sil
+    try { fs.rmSync(getSessionPath(), { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   client.on("disconnected", () => {
+    clearTimeout(loadingTimeout);
     state = { status: "disconnected", qrDataUrl: null, info: null };
     client = null;
   });
