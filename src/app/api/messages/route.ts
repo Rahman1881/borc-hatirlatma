@@ -87,22 +87,30 @@ export async function POST(req: NextRequest) {
     tarihli_bakiye: number;
     son_durum: number;
     toplam_risk: number;
+    raw_data: string | null;
   }[];
 
-  const bulkMessages = customers.map((customer) => ({
-    phone: customer.phone,
-    body: fillTemplate(template.body, {
-      name: customer.name,
-      totalDebt: customer.total_debt,
-      overdueDebt: customer.overdue_debt,
-      toplamAlacak: customer.toplam_alacak,
-      tarihliBakiye: customer.tarihli_bakiye,
-      sonDurum: customer.son_durum,
-      toplamRisk: customer.toplam_risk,
-    }),
-    customerId: customer.id,
-    customerName: customer.name,
-  }));
+  const bulkMessages = customers.map((customer) => {
+    let rawData: Record<string, string | number | null> | undefined;
+    if (customer.raw_data) {
+      try { rawData = JSON.parse(customer.raw_data); } catch { /* ignore */ }
+    }
+    return {
+      phone: customer.phone,
+      body: fillTemplate(template.body, {
+        name: customer.name,
+        totalDebt: customer.total_debt,
+        overdueDebt: customer.overdue_debt,
+        toplamAlacak: customer.toplam_alacak,
+        tarihliBakiye: customer.tarihli_bakiye,
+        sonDurum: customer.son_durum,
+        toplamRisk: customer.toplam_risk,
+        rawData: rawData,
+      }),
+      customerId: customer.id,
+      customerName: customer.name,
+    };
+  });
 
   const insertMessage = db.prepare(`
     INSERT INTO messages (customer_id, customer_name, phone, template_id, body, status, error)

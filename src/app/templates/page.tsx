@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,8 @@ export default function TemplatesPage() {
   const [name, setName] = useState("");
   const [body, setBody] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [excelColumns, setExcelColumns] = useState<string[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const fetchTemplates = () => {
     fetch("/api/templates")
@@ -30,6 +32,16 @@ export default function TemplatesPage() {
 
   useEffect(() => {
     fetchTemplates();
+    // Fetch available Excel columns from settings
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.excel_columns) {
+          try {
+            setExcelColumns(JSON.parse(data.excel_columns));
+          } catch { /* ignore */ }
+        }
+      });
   }, []);
 
   const handleSave = async () => {
@@ -82,6 +94,24 @@ export default function TemplatesPage() {
     setBody("");
   };
 
+  const insertVariable = (varName: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setBody((prev) => prev + `{${varName}}`);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = `{${varName}}`;
+    const newBody = body.substring(0, start) + text + body.substring(end);
+    setBody(newBody);
+    // Restore cursor position after the inserted variable
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.selectionStart = textarea.selectionEnd = start + text.length;
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -111,21 +141,60 @@ export default function TemplatesPage() {
             <div className="space-y-2">
               <Label>Mesaj İçeriği</Label>
               <Textarea
+                ref={textareaRef}
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 placeholder="Sayın {isim}, {tutar} TL borcunuz..."
                 rows={5}
               />
             </div>
-            <div className="bg-muted rounded-lg p-3">
-              <p className="text-xs font-medium mb-2">
-                Kullanılabilir Değişkenler:
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">{"{isim}"}</Badge>
-                <Badge variant="outline">{"{tutar}"}</Badge>
-                <Badge variant="outline">{"{vadeli_borc}"}</Badge>
+            <div className="bg-muted rounded-lg p-3 space-y-3">
+              <div>
+                <p className="text-xs font-medium mb-2">
+                  Temel Değişkenler:
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: "isim", desc: "Müşteri adı" },
+                    { label: "tutar", desc: "Toplam borç" },
+                    { label: "vadeli_borc", desc: "Vadesi geçmiş borç" },
+                  ].map((v) => (
+                    <button
+                      key={v.label}
+                      type="button"
+                      onClick={() => insertVariable(v.label)}
+                      className="inline-flex items-center px-2.5 py-1 rounded-md border bg-background text-xs font-mono hover:bg-primary hover:text-primary-foreground transition-colors cursor-pointer"
+                      title={v.desc}
+                    >
+                      {`{${v.label}}`}
+                    </button>
+                  ))}
+                </div>
               </div>
+              {excelColumns.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium mb-2">
+                    Excel Sütunları (tıklayarak ekleyin):
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {excelColumns.map((col) => (
+                      <button
+                        key={col}
+                        type="button"
+                        onClick={() => insertVariable(col)}
+                        className="inline-flex items-center px-2.5 py-1 rounded-md border bg-background text-xs hover:bg-primary hover:text-primary-foreground transition-colors cursor-pointer"
+                      >
+                        {`{${col}}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {excelColumns.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Excel yükledikten sonra sütun adları burada seçilebilir olacak.
+                </p>
+              )}
             </div>
             <div className="flex gap-2">
               <Button onClick={handleSave}>

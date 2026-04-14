@@ -37,6 +37,7 @@ function initDb(db: Database.Database) {
       son_durum REAL DEFAULT 0,
       toplam_risk REAL DEFAULT 0,
       source TEXT DEFAULT 'yakit',
+      raw_data TEXT,
       created_at TEXT DEFAULT (datetime('now','localtime')),
       updated_at TEXT DEFAULT (datetime('now','localtime'))
     );
@@ -97,6 +98,9 @@ function initDb(db: Database.Database) {
   }
   if (!columnNames.includes("source")) {
     db.exec("ALTER TABLE customers ADD COLUMN source TEXT DEFAULT 'yakit'");
+  }
+  if (!columnNames.includes("raw_data")) {
+    db.exec("ALTER TABLE customers ADD COLUMN raw_data TEXT");
   }
 
   // Default template

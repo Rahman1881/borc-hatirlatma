@@ -14,19 +14,25 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = file.name.toLowerCase();
     let rows: CustomerRow[];
+    let columns: string[] = [];
 
     if (source === "siber") {
-      // Siber Excel - özel format
-      rows = parseSiberXLSX(buffer);
+      const result = parseSiberXLSX(buffer);
+      rows = result.rows;
+      columns = result.columns;
     } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-      rows = parseXLSX(buffer);
+      const result = parseXLSX(buffer);
+      rows = result.rows;
+      columns = result.columns;
     } else {
       const decoder = new TextDecoder("windows-1254");
       let content = decoder.decode(buffer);
       if (!content.includes(";")) {
         content = buffer.toString("utf-8");
       }
-      rows = parseCSV(content);
+      const result = parseCSV(content);
+      rows = result.rows;
+      columns = result.columns;
     }
 
     if (rows.length === 0) {
@@ -43,8 +49,8 @@ export async function POST(req: NextRequest) {
     db.exec("DELETE FROM customers");
 
     const insert = db.prepare(`
-      INSERT INTO customers (code, filo_code, name, phone, total_debt, overdue_debt, credit_limit, city, district, email, fuel_access, filo_group, ozel_kod, toplam_alacak, tarihli_bakiye, son_durum, toplam_risk, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO customers (code, filo_code, name, phone, total_debt, overdue_debt, credit_limit, city, district, email, fuel_access, filo_group, ozel_kod, toplam_alacak, tarihli_bakiye, son_durum, toplam_risk, source, raw_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertMany = db.transaction((items: CustomerRow[]) => {
@@ -67,7 +73,8 @@ export async function POST(req: NextRequest) {
           row.tarihliBakiye || 0,
           row.sonDurum || 0,
           row.toplamRisk || 0,
-          source
+          source,
+          row.rawData ? JSON.stringify(row.rawData) : null
         );
       }
     });
@@ -78,6 +85,13 @@ export async function POST(req: NextRequest) {
     db.prepare(
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_source', ?)"
     ).run(source);
+
+    // Save Excel column names for template variable selection
+    if (columns.length > 0) {
+      db.prepare(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('excel_columns', ?)"
+      ).run(JSON.stringify(columns));
+    }
 
     // Log the upload
     db.prepare(

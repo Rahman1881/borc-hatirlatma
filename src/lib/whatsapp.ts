@@ -226,9 +226,11 @@ export function fillTemplate(
     tarihliBakiye?: number;
     sonDurum?: number;
     toplamRisk?: number;
+    rawData?: Record<string, string | number | null>;
   }
 ): string {
-  return template
+  // First apply legacy hardcoded variables
+  let result = template
     .replace(/{isim}/g, data.name)
     .replace(/{tutar}/g, formatMoney(data.totalDebt))
     .replace(/{vadeli_borc}/g, formatMoney(data.overdueDebt))
@@ -236,6 +238,18 @@ export function fillTemplate(
     .replace(/{tarihli_bakiye}/g, formatMoney(data.tarihliBakiye ?? 0))
     .replace(/{son_durum}/g, formatMoney(data.sonDurum ?? 0))
     .replace(/{toplam_risk}/g, formatMoney(data.toplamRisk ?? 0));
+
+  // Then apply dynamic variables from raw Excel data
+  if (data.rawData) {
+    result = result.replace(/\{(.+?)\}/g, (match, key) => {
+      const val = data.rawData![key];
+      if (val === null || val === undefined) return match;
+      if (typeof val === "number") return formatMoney(val);
+      return String(val);
+    });
+  }
+
+  return result;
 }
 
 function formatMoney(amount: number): string {

@@ -41,6 +41,8 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const { id } = await req.json();
   const db = getDb();
+  // Önce mesajlardaki referansı kaldır, sonra şablonu sil
+  db.prepare("UPDATE messages SET template_id = NULL WHERE template_id = ?").run(id);
   db.prepare("DELETE FROM templates WHERE id = ?").run(id);
   return NextResponse.json({ success: true });
 }

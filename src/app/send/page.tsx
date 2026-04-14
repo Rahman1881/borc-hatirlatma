@@ -57,7 +57,7 @@ export default function SendPage() {
   const [sending, setSending] = useState(false);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [filter, setFilter] = useState("debt");
+  const [filter, setFilter] = useState("with_phone");
   const [search, setSearch] = useState("");
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState<{ filo_group: string; count: number }[]>([]);
@@ -124,9 +124,36 @@ export default function SendPage() {
     });
   };
 
-  const selectAll = () => {
-    if (selectedIds.size === customers.length && customers.length > 0) {
+  const [selectingAll, setSelectingAll] = useState(false);
+
+  const selectAll = async () => {
+    // If already selected all, deselect
+    if (selectedIds.size >= total && total > 0) {
       setSelectedIds(new Set());
+      return;
+    }
+
+    // If all on current page, fetch all filtered IDs from backend
+    if (total > customers.length) {
+      setSelectingAll(true);
+      try {
+        const params = new URLSearchParams({
+          filter,
+          search,
+          group: Array.from(selectedGroups).join(","),
+          phone_only: "1",
+          min_debt: String(minDebt),
+          ids_only: "1",
+        });
+        const res = await fetch(`/api/customers?${params}`);
+        const data = await res.json();
+        setSelectedIds(new Set(data.ids));
+      } catch {
+        // Fallback to current page
+        setSelectedIds(new Set(customers.map((c) => c.id)));
+      } finally {
+        setSelectingAll(false);
+      }
     } else {
       setSelectedIds(new Set(customers.map((c) => c.id)));
     }
@@ -341,10 +368,12 @@ export default function SendPage() {
                 <CardTitle className="text-base">
                   {total} müşteri listeleniyor
                 </CardTitle>
-                <Button variant="outline" size="sm" onClick={selectAll}>
-                  {selectedIds.size === customers.length && customers.length > 0
+                <Button variant="outline" size="sm" onClick={selectAll} disabled={selectingAll}>
+                  {selectingAll
+                    ? "Yükleniyor..."
+                    : selectedIds.size >= total && total > 0
                     ? "Seçimi Kaldır"
-                    : "Tümünü Seç"}
+                    : `Tümünü Seç (${total})`}
                 </Button>
               </div>
             </CardHeader>
@@ -501,10 +530,7 @@ export default function SendPage() {
                       .replace(/{isim}/g, "Ahmet Yılmaz")
                       .replace(/{tutar}/g, "5.000,00")
                       .replace(/{vadeli_borc}/g, "3.200,00")
-                      .replace(/{toplam_alacak}/g, "4.500,00")
-                      .replace(/{tarihli_bakiye}/g, "1.250,00")
-                      .replace(/{son_durum}/g, "2.100,00")
-                      .replace(/{toplam_risk}/g, "6.300,00")}
+                      .replace(/\{(.+?)\}/g, "[değer]")}
                   </p>
                 </div>
               </CardContent>
@@ -568,10 +594,7 @@ export default function SendPage() {
                   .replace(/{isim}/g, "Müşteri Adı")
                   .replace(/{tutar}/g, "X.XXX,XX")
                   .replace(/{vadeli_borc}/g, "X.XXX,XX")
-                  .replace(/{toplam_alacak}/g, "X.XXX,XX")
-                  .replace(/{tarihli_bakiye}/g, "X.XXX,XX")
-                  .replace(/{son_durum}/g, "X.XXX,XX")
-                  .replace(/{toplam_risk}/g, "X.XXX,XX")}
+                  .replace(/\{(.+?)\}/g, "[değer]")}
               </p>
             </div>
 

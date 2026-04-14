@@ -71,6 +71,15 @@ export async function GET(req: NextRequest) {
     .prepare(`SELECT COUNT(*) as count FROM customers WHERE ${where}`)
     .get(...params) as { count: number };
 
+  // Return only IDs for "select all" requests
+  const idsOnly = url.searchParams.get("ids_only") === "1";
+  if (idsOnly) {
+    const allIds = db
+      .prepare(`SELECT id FROM customers WHERE ${where} ORDER BY total_debt DESC`)
+      .all(...params) as { id: number }[];
+    return NextResponse.json({ ids: allIds.map((r) => r.id), total: total.count });
+  }
+
   const customers = db
     .prepare(
       `SELECT * FROM customers WHERE ${where} ORDER BY total_debt DESC LIMIT ? OFFSET ?`

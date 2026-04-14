@@ -19,6 +19,8 @@ export interface CustomerRow {
   tarihliBakiye?: number;
   sonDurum?: number;
   toplamRisk?: number;
+  // Tüm Excel sütunlarını JSON olarak sakla
+  rawData?: Record<string, string | number | null>;
 }
 
 function parseTurkishNumber(value: string | number | null | undefined): number {
@@ -82,12 +84,13 @@ const HEADER_MAP = new Map<string, string>([
   ["İlçe", "district"],
 ]);
 
-export function parseXLSX(buffer: Buffer): CustomerRow[] {
+export function parseXLSX(buffer: Buffer): { rows: CustomerRow[]; columns: string[] } {
   const wb = XLSX.read(buffer, { type: "buffer" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
 
   const rows: CustomerRow[] = [];
+  const columns: string[] = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
 
   for (const raw of rawRows) {
     // Build a mapped row using header map
@@ -99,6 +102,12 @@ export function parseXLSX(buffer: Buffer): CustomerRow[] {
 
     const name = str(mapped.name);
     if (!name) continue;
+
+    // Tüm sütunları rawData olarak sakla
+    const rawData: Record<string, string | number | null> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      rawData[key] = value === null || value === undefined ? null : (typeof value === "number" ? value : String(value));
+    }
 
     rows.push({
       code: str(mapped.code),
@@ -113,13 +122,14 @@ export function parseXLSX(buffer: Buffer): CustomerRow[] {
       email: str(mapped.email) || str(mapped.emailAlt),
       city: str(mapped.city),
       district: str(mapped.district),
+      rawData,
     });
   }
 
-  return rows;
+  return { rows, columns };
 }
 
-export function parseSiberXLSX(buffer: Buffer): CustomerRow[] {
+export function parseSiberXLSX(buffer: Buffer): { rows: CustomerRow[]; columns: string[] } {
   const wb = XLSX.read(buffer, { type: "buffer" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   // Read as array of arrays to handle the complex format
@@ -129,6 +139,7 @@ export function parseSiberXLSX(buffer: Buffer): CustomerRow[] {
   });
 
   const rows: CustomerRow[] = [];
+  const SIBER_COLUMNS = ["Cari Kodu", "Unvanı", "Grup", "Özel Kod", "Telefon", "Toplam Borç", "Toplam Alacak", "Tarihli Bakiye", "Son Durum", "Toplam Risk"];
 
   // Data starts around row 10 (index 9), skip header/metadata rows
   // Find the first data row by looking for rows with a value in column A that looks like a code
@@ -175,11 +186,24 @@ export function parseSiberXLSX(buffer: Buffer): CustomerRow[] {
     phone = phone.replace(/^-+/, "");
     phone = normalizePhone(phone);
 
+    const rawData: Record<string, string | number | null> = {
+      "Cari Kodu": codeStr,
+      "Unvanı": nameStr,
+      "Grup": fixTurkishEncoding(str(row[3])),
+      "Özel Kod": fixTurkishEncoding(str(row[4])),
+      "Telefon": phone,
+      "Toplam Borç": toplamBorc,
+      "Toplam Alacak": parseTurkishNumber(row[7]),
+      "Tarihli Bakiye": parseTurkishNumber(row[8]),
+      "Son Durum": parseTurkishNumber(row[9]),
+      "Toplam Risk": parseTurkishNumber(row[10]),
+    };
+
     rows.push({
       code: codeStr,
       filoCode: "",
       name: nameStr,
-      filoGroup: fixTurkishEncoding(str(row[3])), // Grup
+      filoGroup: fixTurkishEncoding(str(row[3])),
       totalDebt: toplamBorc,
       overdueDebt: 0,
       creditLimit: 0,
@@ -188,20 +212,21 @@ export function parseSiberXLSX(buffer: Buffer): CustomerRow[] {
       email: "",
       city: "",
       district: "",
-      ozelKod: fixTurkishEncoding(str(row[4])), // Ozel Kod
-      toplamAlacak: parseTurkishNumber(row[7]), // Toplam Alacak
-      tarihliBakiye: parseTurkishNumber(row[8]), // Tarihli Bakiye
-      sonDurum: parseTurkishNumber(row[9]), // Son Durum
-      toplamRisk: parseTurkishNumber(row[10]), // Toplam Risk
+      ozelKod: fixTurkishEncoding(str(row[4])),
+      toplamAlacak: parseTurkishNumber(row[7]),
+      tarihliBakiye: parseTurkishNumber(row[8]),
+      sonDurum: parseTurkishNumber(row[9]),
+      toplamRisk: parseTurkishNumber(row[10]),
+      rawData,
     });
   }
 
-  return rows;
+  return { rows, columns: SIBER_COLUMNS };
 }
 
-export function parseCSV(content: string): CustomerRow[] {
+export function parseCSV(content: string): { rows: CustomerRow[]; columns: string[] } {
   const lines = content.split("\n").filter((l) => l.trim());
-  if (lines.length < 2) return [];
+  if (lines.length < 2) return { rows: [], columns: [] };
 
   const rows: CustomerRow[] = [];
 
@@ -232,5 +257,5 @@ export function parseCSV(content: string): CustomerRow[] {
     });
   }
 
-  return rows;
+  return { rows, columns: [] };
 }
