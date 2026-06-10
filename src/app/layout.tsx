@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
-import Sidebar from "@/components/sidebar";
+import AppShell from "@/components/app-shell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,12 +22,7 @@ export default function RootLayout({
   return (
     <html lang="tr">
       <body className={`${geistSans.variable} font-sans antialiased`}>
-        <div className="flex h-screen">
-          <Sidebar />
-          <main className="flex-1 overflow-auto bg-muted/30">
-            <div className="p-6">{children}</div>
-          </main>
-        </div>
+        <AppShell>{children}</AppShell>
         <Toaster position="top-right" richColors />
       </body>
     </html>

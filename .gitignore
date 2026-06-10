@@ -42,5 +42,7 @@ next-env.d.ts
 
 # local data
 data.db
+data.db-shm
+data.db-wal
 /.wwebjs_auth/
 /.wwebjs_cache/

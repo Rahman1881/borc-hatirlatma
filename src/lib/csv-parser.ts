@@ -143,7 +143,6 @@ export function parseSiberXLSX(buffer: Buffer): { rows: CustomerRow[]; columns: 
 
   // Data starts around row 10 (index 9), skip header/metadata rows
   // Find the first data row by looking for rows with a value in column A that looks like a code
-  let dataStarted = false;
   for (let i = 0; i < allRows.length; i++) {
     const row = allRows[i];
     if (!row || row.length === 0) continue;
@@ -176,9 +175,6 @@ export function parseSiberXLSX(buffer: Buffer): { rows: CustomerRow[]; columns: 
     // Skip if colG (Toplam Borc) is not a number-like value (filters out header rows)
     if (colG === null || colG === undefined) continue;
     const toplamBorc = parseTurkishNumber(colG);
-
-    // This looks like a valid data row
-    dataStarted = true;
 
     // Phone normalization for Siber format: -5552854368 -> 905552854368
     let phone = str(row[5]);

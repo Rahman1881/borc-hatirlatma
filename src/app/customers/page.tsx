@@ -49,12 +49,6 @@ function formatMoney(n: number) {
   });
 }
 
-interface EditingCell {
-  id: number;
-  field: string;
-  value: string;
-}
-
 function EditableCell({
   value,
   customerId,
@@ -77,10 +71,9 @@ function EditableCell({
 
   useEffect(() => {
     if (editing) {
-      setEditValue(String(value));
       setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [editing, value]);
+  }, [editing]);
 
   const save = async () => {
     if (editValue === String(value)) {
@@ -137,7 +130,10 @@ function EditableCell({
   return (
     <span
       className={`cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5 -mx-1 ${className || ""}`}
-      onClick={() => setEditing(true)}
+      onClick={() => {
+        setEditValue(String(value));
+        setEditing(true);
+      }}
       title="Düzenlemek için tıklayın"
     >
       {children}

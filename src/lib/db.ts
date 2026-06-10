@@ -76,6 +76,22 @@ function initDb(db: Database.Database) {
       imported_rows INTEGER NOT NULL,
       uploaded_at TEXT DEFAULT (datetime('now','localtime'))
     );
+
+    CREATE TABLE IF NOT EXISTS invoice_buyer_overrides (
+      source_tax_number TEXT PRIMARY KEY,
+      tax_number TEXT NOT NULL,
+      buyer_type TEXT NOT NULL,
+      buyer_name TEXT NOT NULL,
+      buyer_surname TEXT DEFAULT '',
+      tax_office TEXT DEFAULT '',
+      city TEXT DEFAULT '',
+      district TEXT DEFAULT '',
+      address TEXT DEFAULT '',
+      email TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
   `);
 
   // Add Siber Excel columns if they don't exist (migration)
