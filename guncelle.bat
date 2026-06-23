@@ -25,11 +25,24 @@ if %errorlevel% neq 0 (
 echo Guncellemeler kontrol ediliyor...
 echo.
 
-git pull origin master
+:: Sunucudan en son surumu indir
+git fetch origin master
 if %errorlevel% neq 0 (
     echo.
-    echo [HATA] Guncelleme basarisiz oldu.
+    echo [HATA] Guncelleme indirilemedi.
     echo Internet baglantinizi kontrol edin.
+    pause
+    exit /b 1
+)
+
+:: Yerel kodu sunucudaki son surume birebir esitle.
+:: npm install paket dosyalarini (package-lock.json) degistirdigi icin normal
+:: "git pull" cakisip duruyordu. reset --hard bunu kesin cozer. Ayarlar ve veriler
+:: (data.db, data\vrd, .claude) gitignore'da oldugu icin SILINMEZ, korunur.
+git reset --hard origin/master
+if %errorlevel% neq 0 (
+    echo.
+    echo [HATA] Guncelleme uygulanamadi.
     pause
     exit /b 1
 )
