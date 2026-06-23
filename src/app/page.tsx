@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Fuel, RadioTower } from "lucide-react";
+import { ArrowRight, Fuel, RadioTower, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,13 @@ const modules = [
     description:
       "UTTS giriş bilgileriyle bağlantı kurun ve montaj verilerini ayrı ekranda takip edin.",
     icon: RadioTower,
+  },
+  {
+    href: "/ai",
+    title: "AI İş Asistanı",
+    description:
+      "Yapay zeka ile satış analizi, doğal dilde soru-cevap, müşteri bulucu ve günlük Telegram raporları.",
+    icon: Sparkles,
   },
 ];
 

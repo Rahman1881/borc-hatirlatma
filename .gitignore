@@ -44,5 +44,9 @@ next-env.d.ts
 data.db
 data.db-shm
 data.db-wal
+# Örnek VRD satış verisi (gerçek müşteri PII içerir; production'da ağ yolu Ayarlar'dan girilir)
+/data/vrd/
+# yerel editör / Claude ayarları
+/.claude/
 /.wwebjs_auth/
 /.wwebjs_cache/

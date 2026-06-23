@@ -1,0 +1,166 @@
+import getDb from "@/lib/db";
+
+// Şimdilik Gemini kullanıyoruz; ileride başka bir AI sağlayıcıya geçilebilir.
+// Model adı ve anahtarı Ayarlar'dan (settings tablosu) ya da ortam değişkeninden gelir.
+
+const DEFAULT_MODEL = "gemini-3.5-flash";
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+// AI yanıtları yavaş olabilir; yine de takılı kalmamak için üst sınır koyuyoruz.
+const REQUEST_TIMEOUT_MS = 45_000;
+
+export type ChatMessage = { role: "user" | "model"; text: string };
+
+// fetch'i bir zaman aşımı ile sarmalar; süre dolarsa isteği iptal eder.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`Gemini isteği zaman aşımına uğradı (${timeoutMs / 1000}sn).`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function getGeminiApiKey(): string {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get("gemini_api_key") as { value: string } | undefined;
+  return (row?.value || process.env.GEMINI_API_KEY || "").trim();
+}
+
+export function getGeminiModel(): string {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get("gemini_model") as { value: string } | undefined;
+  return (row?.value || process.env.GEMINI_MODEL || DEFAULT_MODEL).trim();
+}
+
+export function isGeminiConfigured(): boolean {
+  return getGeminiApiKey().length > 0;
+}
+
+export async function askGemini(
+  messages: ChatMessage[],
+  systemPrompt: string
+): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "Gemini API anahtarı tanımlı değil. Ayarlar > Yapay Zeka bölümünden anahtarı girin."
+    );
+  }
+
+  const model = getGeminiModel();
+  const url = `${API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    system_instruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    contents: messages.map((m) => ({
+      role: m.role,
+      parts: [{ text: m.text }],
+    })),
+    generationConfig: {
+      temperature: 0.4,
+      // Gemini 3.x flash "düşünme" tokenları bütçeden harcar; cevabın kesilmemesi
+      // için yüksek tutulur (düşük tutulursa yanıt MAX_TOKENS ile yarıda kalır).
+      maxOutputTokens: 4096,
+    },
+  };
+
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const err = await res.json();
+      detail = err?.error?.message || JSON.stringify(err);
+    } catch {
+      detail = await res.text();
+    }
+    throw new Error(`Gemini isteği başarısız (${res.status}): ${detail}`);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts
+    ?.map((p: { text?: string }) => p?.text || "")
+    .join("")
+    .trim();
+
+  if (!text) {
+    throw new Error("Gemini boş cevap döndürdü.");
+  }
+
+  return text;
+}
+
+// Gemini'den JSON çıktı ister (responseMimeType=application/json). Parse edilmiş veri döner.
+export async function askGeminiJson<T>(
+  systemPrompt: string,
+  userText: string
+): Promise<T> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error("Gemini API anahtarı tanımlı değil.");
+  }
+
+  const model = getGeminiModel();
+  const url = `${API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: "user", parts: [{ text: userText }] }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+      responseMimeType: "application/json",
+    },
+  };
+
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const err = await res.json();
+      detail = err?.error?.message || JSON.stringify(err);
+    } catch {
+      detail = await res.text();
+    }
+    throw new Error(`Gemini isteği başarısız (${res.status}): ${detail}`);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts
+    ?.map((p: { text?: string }) => p?.text || "")
+    .join("")
+    .trim();
+
+  if (!text) throw new Error("Gemini boş cevap döndürdü.");
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error("Gemini geçerli JSON döndürmedi.");
+  }
+}

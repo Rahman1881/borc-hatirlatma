@@ -69,6 +69,19 @@ function initDb(db: Database.Database) {
       value TEXT NOT NULL
     );
 
+    -- Günlük akaryakıt fiyatları (marka x il x yakıt). Her gün otomatik tazelenir.
+    CREATE TABLE IF NOT EXISTS fuel_prices (
+      tarih TEXT NOT NULL,        -- YYYY-MM-DD
+      il TEXT NOT NULL,           -- ör. Sakarya
+      plaka INTEGER NOT NULL,     -- ör. 54
+      marka TEXT NOT NULL,        -- ör. Petrol Ofisi
+      yakit TEXT NOT NULL,        -- benzin | motorin | lpg
+      fiyat REAL NOT NULL,
+      kaynak TEXT NOT NULL DEFAULT 'manuel', -- epdk | manuel
+      updated_at TEXT DEFAULT (datetime('now','localtime')),
+      PRIMARY KEY (tarih, plaka, marka, yakit)
+    );
+
     CREATE TABLE IF NOT EXISTS uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,
