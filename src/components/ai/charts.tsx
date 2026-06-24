@@ -13,7 +13,8 @@ import {
   Cell,
   Legend,
 } from "recharts";
-import { weeklySales, fuelMix } from "@/lib/ai-mock";
+type WeeklyPoint = { gun: string; motorin: number; benzin: number; lpg: number };
+type FuelMixPoint = { name: string; value: number; color: string };
 
 const axisStyle = { fontSize: 11, fill: "var(--muted-foreground)" };
 
@@ -41,10 +42,10 @@ function TooltipBox({
   );
 }
 
-export function WeeklyAreaChart() {
+export function WeeklyAreaChart({ data }: { data: WeeklyPoint[] }) {
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <AreaChart data={weeklySales} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
+      <AreaChart data={data} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
         <defs>
           <linearGradient id="g-motorin" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#2563eb" stopOpacity={0.4} />
@@ -54,9 +55,9 @@ export function WeeklyAreaChart() {
             <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
             <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
           </linearGradient>
-          <linearGradient id="g-market" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#16a34a" stopOpacity={0.3} />
-            <stop offset="95%" stopColor="#16a34a" stopOpacity={0} />
+          <linearGradient id="g-lpg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+            <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
@@ -65,18 +66,18 @@ export function WeeklyAreaChart() {
         <Tooltip content={<TooltipBox />} />
         <Area type="monotone" dataKey="motorin" name="Motorin" stroke="#2563eb" strokeWidth={2} fill="url(#g-motorin)" />
         <Area type="monotone" dataKey="benzin" name="Benzin" stroke="#f97316" strokeWidth={2} fill="url(#g-benzin)" />
-        <Area type="monotone" dataKey="market" name="Market" stroke="#16a34a" strokeWidth={2} fill="url(#g-market)" />
+        <Area type="monotone" dataKey="lpg" name="LPG" stroke="#22c55e" strokeWidth={2} fill="url(#g-lpg)" />
       </AreaChart>
     </ResponsiveContainer>
   );
 }
 
-export function FuelMixChart() {
+export function FuelMixChart({ data }: { data: FuelMixPoint[] }) {
   return (
     <ResponsiveContainer width="100%" height={260}>
       <PieChart>
         <Pie
-          data={fuelMix}
+          data={data}
           dataKey="value"
           nameKey="name"
           cx="50%"
@@ -86,7 +87,7 @@ export function FuelMixChart() {
           paddingAngle={3}
           stroke="none"
         >
-          {fuelMix.map((d) => (
+          {data.map((d) => (
             <Cell key={d.name} fill={d.color} />
           ))}
         </Pie>

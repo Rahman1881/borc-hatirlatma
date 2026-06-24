@@ -1,56 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { askGemini, type ChatMessage } from "@/lib/gemini";
-import { kpis, weeklySales, fuelMix, shifts, alerts } from "@/lib/ai-mock";
 import { buildRealStationContext } from "@/lib/station-report";
 
-// Pompa (VRD) satış verisi gerçek; market/tank gibi henüz bağlı olmayan kısımlar
-// için örnek (mock) veri tamamlayıcı olarak eklenir.
+// Sohbet bağlamı yalnızca gerçek pompa (VRD) satış verisinden üretilir.
+// Market/tank gibi henüz bağlı olmayan veriler için AI dürüstçe "bağlı değil" der.
 function buildBusinessContext(): string {
-  const kpiLines = kpis
-    .map((k) => `- ${k.label}: ${k.value} (değişim ${k.change}, ${k.sub})`)
-    .join("\n");
-
-  const weekLines = weeklySales
-    .map(
-      (d) =>
-        `- ${d.gun}: motorin ${d.motorin}, benzin ${d.benzin}, lpg ${d.lpg}, market ${d.market} (bin ₺)`
-    )
-    .join("\n");
-
-  const mixLines = fuelMix.map((f) => `- ${f.name}: %${f.value}`).join("\n");
-
-  const shiftLines = shifts
-    .map((s) => `- ${s.name}: ciro ${s.ciro}, ${s.litre}, ${s.musteri} müşteri`)
-    .join("\n");
-
-  const alertLines = alerts
-    .map((a) => `- [${a.tone}] ${a.title}: ${a.detail} (${a.time})`)
-    .join("\n");
-
-  // Gerçek pompa satış verisi (VRD) — varsa bağlamın başına eklenir.
-  let realData = "";
   try {
-    realData = buildRealStationContext();
+    return buildRealStationContext();
   } catch {
-    realData = "";
+    return "GÜNCEL VERİ: Pompa satış verisi (VRD) henüz okunamadı.";
   }
-
-  return `${realData ? realData + "\n\n---\n\n" : ""}TAMAMLAYICI ÖRNEK VERİLER (market/tank/uyarılar henüz canlı bağlı değil — örnek/mock):
-
-Günlük KPI'lar:
-${kpiLines}
-
-Haftalık satış (bin ₺):
-${weekLines}
-
-Yakıt dağılımı (ciro payı):
-${mixLines}
-
-Vardiya özeti:
-${shiftLines}
-
-Aktif uyarılar:
-${alertLines}`;
 }
 
 const SYSTEM_PROMPT_BASE = `Sen "Çark Petrol AI"sın — bir Petrol Ofisi akaryakıt istasyonunun patronu için çalışan iş zekası asistanısın.
@@ -58,7 +17,10 @@ const SYSTEM_PROMPT_BASE = `Sen "Çark Petrol AI"sın — bir Petrol Ofisi akary
 Görevin: istasyonun satışları, kârlılığı, yakıt ve market cirosu, vardiyalar, tank seviyeleri ve müşterileri hakkında soruları Türkçe, net ve kısa cevaplamak.
 
 Kurallar:
-- Sadece sana verilen verilere dayan. Veride olmayan bir şey sorulursa dürüstçe "bu veri henüz bağlı değil (SiberPet/Uyumsoft entegrasyonu)" de.
+- Sadece sana verilen GERÇEK satış verilerine dayan. ASLA rakam uydurma.
+- Market cirosu, tank/stok seviyeleri ve dış uyarılar HENÜZ bağlı DEĞİL. Bunlar sorulursa
+  dürüstçe "bu veri henüz bağlı değil (SiberPet/Uyumsoft entegrasyonu)" de; tahmini sayı verme.
+- "En yoğun saat/vardiya" sorulursa verideki saatlik satış ve vardiya kırılımını kullan.
 - Rakamları Türk Lirası (₺) ve binlik ayraçla, kısa ve okunur biçimde ver.
 - Patron gibi pratik konuş: önce cevap, sonra kısa gerekçe, gerekirse 1 öneri.
 - Gereksiz uzun açıklama yapma; mobil/Telegram'da okunacak gibi yaz.

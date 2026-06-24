@@ -1,6 +1,6 @@
 import { Panel, SectionTitle, Pill } from "@/components/ai/ui";
 import { WeeklyAreaChart, FuelMixChart } from "@/components/ai/charts";
-import { kpis, alerts, shifts } from "@/lib/ai-mock";
+import { buildDashboardData, type DashboardData } from "@/lib/station-report";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -8,6 +8,7 @@ import {
   CircleCheck,
   Flame,
   Sparkles,
+  PlugZap,
 } from "lucide-react";
 
 const toneIcon = {
@@ -16,7 +17,34 @@ const toneIcon = {
   positive: <CircleCheck className="h-4 w-4 text-emerald-500" />,
 };
 
+function loadDashboard(): DashboardData {
+  try {
+    return buildDashboardData();
+  } catch {
+    return {
+      hasData: false,
+      stationName: "",
+      dateLabel: "",
+      summary: "Gösterge paneli verisi okunamadı.",
+      kpis: [],
+      weekly: [],
+      fuelMix: [],
+      shifts: [],
+      alerts: [
+        {
+          title: "Veri okunamadı",
+          detail: "Pompa satış verisi (VRD) şu an okunamıyor.",
+          tone: "negative",
+          time: "Şimdi",
+        },
+      ],
+    };
+  }
+}
+
 export default function AiDashboardPage() {
+  const data = loadDashboard();
+
   return (
     <div className="space-y-6">
       <Panel className="bg-gradient-to-r from-orange-500/10 via-card to-card">
@@ -25,87 +53,143 @@ export default function AiDashboardPage() {
             <Sparkles className="h-5 w-5" />
           </span>
           <div>
-            <p className="text-sm font-semibold">AI Günlük Özet</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Bugün toplam ciro <b className="text-foreground">₺549.430</b> ile dünü
-              %7,4 geçti. En güçlü kalem motorin. LPG satışındaki düşüş ve Tank 2
-              seviyesi takip edilmeli. Hafta sonu için yoğun talep bekleniyor.
+            <p className="text-sm font-semibold">
+              AI Günlük Özet
+              {data.dateLabel ? (
+                <span className="ml-2 font-normal text-muted-foreground">
+                  · {data.dateLabel}
+                </span>
+              ) : null}
             </p>
+            <p className="mt-1 text-sm text-muted-foreground">{data.summary}</p>
           </div>
         </div>
       </Panel>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((k) => (
-          <Panel key={k.key}>
-            <p className="text-sm text-muted-foreground">{k.label}</p>
-            <p className="mt-2 text-2xl font-bold tracking-tight">{k.value}</p>
-            <div className="mt-3 flex items-center justify-between">
-              <span
-                className={`inline-flex items-center gap-1 text-sm font-medium ${
-                  k.positive
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : "text-red-600 dark:text-red-400"
-                }`}
-              >
-                {k.positive ? (
-                  <ArrowUpRight className="h-4 w-4" />
-                ) : (
-                  <ArrowDownRight className="h-4 w-4" />
-                )}
-                {k.change}
-              </span>
-              <span className="text-xs text-muted-foreground">{k.sub}</span>
-            </div>
-          </Panel>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Panel className="lg:col-span-2">
-          <SectionTitle
-            title="Haftalık Satış Trendi (bin ₺)"
-            action={<Pill tone="primary">Son 7 gün</Pill>}
-          />
-          <WeeklyAreaChart />
-        </Panel>
+      {!data.hasData ? (
         <Panel>
-          <SectionTitle title="Yakıt Dağılımı" />
-          <FuelMixChart />
-        </Panel>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Panel className="lg:col-span-2">
-          <SectionTitle title="Vardiya Performansı" action={<Pill>Bugün</Pill>} />
-          <div className="overflow-hidden rounded-lg border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2.5 text-left font-medium">Vardiya</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Ciro</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Litre</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Müşteri</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shifts.map((s) => (
-                  <tr key={s.name} className="border-t">
-                    <td className="px-4 py-3 font-medium">{s.name}</td>
-                    <td className="px-4 py-3 text-right">{s.ciro}</td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">{s.litre}</td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">{s.musteri}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5">
+              <PlugZap className="h-5 w-5 text-amber-500" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold">Pompa satış verisi bağlı değil</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Gösterge paneli gerçek pompa (VRD) satışından beslenir. Veri bulunamadı —
+                Ayarlar&apos;dan VRD klasörü yolunu kontrol edin. Aşağıdaki modül durumları
+                hangi entegrasyonların aktif olduğunu gösterir.
+              </p>
+            </div>
           </div>
         </Panel>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {data.kpis.map((k) => (
+              <Panel key={k.key}>
+                <p className="text-sm text-muted-foreground">{k.label}</p>
+                <p
+                  className={`mt-2 text-2xl font-bold tracking-tight ${
+                    k.connected ? "" : "text-muted-foreground"
+                  }`}
+                >
+                  {k.value}
+                </p>
+                <div className="mt-3 flex items-center justify-between">
+                  {k.connected && k.change ? (
+                    <span
+                      className={`inline-flex items-center gap-1 text-sm font-medium ${
+                        k.positive
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-red-600 dark:text-red-400"
+                      }`}
+                    >
+                      {k.positive ? (
+                        <ArrowUpRight className="h-4 w-4" />
+                      ) : (
+                        <ArrowDownRight className="h-4 w-4" />
+                      )}
+                      {k.change}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                      <PlugZap className="h-3.5 w-3.5" /> Bağlı değil
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground">{k.sub}</span>
+                </div>
+              </Panel>
+            ))}
+          </div>
 
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Panel className="lg:col-span-2">
+              <SectionTitle
+                title="Haftalık Satış Trendi (bin ₺)"
+                action={<Pill tone="primary">Son 7 gün</Pill>}
+              />
+              <WeeklyAreaChart data={data.weekly} />
+            </Panel>
+            <Panel>
+              <SectionTitle title="Yakıt Dağılımı" />
+              <FuelMixChart data={data.fuelMix} />
+            </Panel>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Panel className="lg:col-span-2">
+              <SectionTitle
+                title="Vardiya Performansı"
+                action={<Pill>{data.dateLabel}</Pill>}
+              />
+              <div className="overflow-hidden rounded-lg border">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-2.5 text-left font-medium">Vardiya</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Ciro</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Litre</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Fiş</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.shifts.map((s) => (
+                      <tr key={s.name} className="border-t">
+                        <td className="px-4 py-3 font-medium">{s.name}</td>
+                        <td className="px-4 py-3 text-right">{s.ciro}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{s.litre}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{s.musteri}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+
+            <Panel>
+              <SectionTitle title="Akıllı Uyarılar" />
+              <div className="space-y-3">
+                {data.alerts.map((a) => (
+                  <div key={a.title} className="flex gap-3 rounded-lg border bg-muted/50 p-3">
+                    <span className="mt-0.5">{toneIcon[a.tone]}</span>
+                    <div>
+                      <p className="text-sm font-medium">{a.title}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{a.detail}</p>
+                      <p className="mt-1 text-[11px] text-muted-foreground/70">{a.time}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          </div>
+        </>
+      )}
+
+      {!data.hasData && (
         <Panel>
-          <SectionTitle title="Akıllı Uyarılar" />
+          <SectionTitle title="Akıllı Uyarılar — Modül Durumu" />
           <div className="space-y-3">
-            {alerts.map((a) => (
+            {data.alerts.map((a) => (
               <div key={a.title} className="flex gap-3 rounded-lg border bg-muted/50 p-3">
                 <span className="mt-0.5">{toneIcon[a.tone]}</span>
                 <div>
@@ -117,7 +201,7 @@ export default function AiDashboardPage() {
             ))}
           </div>
         </Panel>
-      </div>
+      )}
     </div>
   );
 }
