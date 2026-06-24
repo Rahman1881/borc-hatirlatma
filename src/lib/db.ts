@@ -127,6 +127,16 @@ function initDb(db: Database.Database) {
       data TEXT NOT NULL                -- ScanHistoryEntry JSON
     );
 
+    -- Telegram "yakınımdaki müşteriler": bir konum paylaşıldığında bulunan tüm
+    -- sonuçlar burada saklanır. "devam" denince aynıları tekrar gönderilmesin diye
+    -- kaç tanesinin gönderildiği (sent) tutulur. Her chat için tek kayıt.
+    CREATE TABLE IF NOT EXISTS telegram_nearby_cache (
+      chat_id TEXT PRIMARY KEY,
+      leads TEXT NOT NULL,
+      sent INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
     CREATE TABLE IF NOT EXISTS uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,

@@ -140,6 +140,29 @@ async function fetchReport(type) {
   }
 }
 
+// Konuma en yakın potansiyel müşterileri (veya "devam" ile sonraki partiyi) getirir.
+async function fetchNearby(payload) {
+  try {
+    const d = await apiPost("/api/ai/telegram/nearby", payload);
+    return d.text || "Yakın müşteri bulunamadı.";
+  } catch {
+    return "Yakın müşteri araması yapılamadı (sunucuya ulaşılamadı).";
+  }
+}
+
+// Telegram'da konum paylaşma butonu gösterir (telefondan tek dokunuş).
+async function requestLocation(chatId) {
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: "Konumunu paylaş, sana en yakın 10 potansiyel müşteriyi (numara + harita) bulayım.",
+    reply_markup: {
+      keyboard: [[{ text: "📍 Konumumu Gönder", request_location: true }]],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  });
+}
+
 const WELCOME = `👋 <b>Çark Petrol AI</b>'ya hoş geldiniz!
 
 Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
@@ -149,7 +172,8 @@ Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
 
 Komutlar:
 /rapor — Günlük satış raporu
-/hafta — Haftalık rapor`;
+/hafta — Haftalık rapor
+/yakin — Konumuna en yakın potansiyel müşteriler`;
 
 async function handleMessage(msg) {
   const chatId = msg.chat?.id;
@@ -160,6 +184,18 @@ async function handleMessage(msg) {
     msg.chat?.title ||
     "";
   rememberChat(chatId, name);
+
+  // Konum paylaşıldıysa: en yakın potansiyel müşterileri bul ve gönder.
+  if (msg.location) {
+    await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+    const text = await fetchNearby({
+      chatId,
+      lat: msg.location.latitude,
+      lng: msg.location.longitude,
+    });
+    await sendMessage(chatId, text);
+    return;
+  }
 
   const text = (msg.text || "").trim();
   if (!text) return;
@@ -177,6 +213,15 @@ async function handleMessage(msg) {
   if (lower === "/hafta" || lower === "/haftalik" || lower === "/haftalık") {
     await sendMessage(chatId, "📊 Haftalık rapor hazırlanıyor…");
     await sendMessage(chatId, await fetchReport("weekly"), "HTML");
+    return;
+  }
+  if (lower === "/yakin" || lower === "/yakın" || lower === "yakin" || lower === "yakın") {
+    await requestLocation(chatId);
+    return;
+  }
+  if (lower === "devam" || lower === "daha" || lower === "/devam") {
+    await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+    await sendMessage(chatId, await fetchNearby({ chatId, more: true }));
     return;
   }
 

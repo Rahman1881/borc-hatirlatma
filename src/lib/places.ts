@@ -71,10 +71,15 @@ export function isPlacesConfigured(): boolean {
   return getPlacesApiKey().length > 0;
 }
 
+type LocationBias = {
+  circle: { center: { latitude: number; longitude: number }; radius: number };
+};
+
 type SearchOptions = {
   textQuery: string;
   pageSize?: number;
   pageToken?: string;
+  locationBias?: LocationBias;
 };
 
 async function searchTextOnce(
@@ -88,6 +93,7 @@ async function searchTextOnce(
     pageSize: opts.pageSize ?? 20,
   };
   if (opts.pageToken) body.pageToken = opts.pageToken;
+  if (opts.locationBias) body.locationBias = opts.locationBias;
 
   const res = await fetchWithTimeout(SEARCH_URL, {
     method: "POST",
@@ -166,4 +172,34 @@ export async function searchPlaces(
   }
 
   return out.slice(0, maxResults);
+}
+
+// Belirli bir koordinatın çevresinde (locationBias dairesi) metin araması yapar.
+// Telegram "yakınımdaki müşteriler" özelliği için kullanılır. locationBias yumuşak
+// bir ipucudur; kesin yarıçap filtresi çağıran tarafta (haversine) uygulanır.
+export async function searchPlacesNear(
+  textQuery: string,
+  lat: number,
+  lng: number,
+  radiusMeters = 15000,
+  maxResults = 20
+): Promise<PlaceResult[]> {
+  const apiKey = getPlacesApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "Google Places API anahtarı tanımlı değil. Ayarlar > Yapay Zeka bölümünden anahtarı girin."
+    );
+  }
+
+  const { places } = await searchTextOnce(apiKey, {
+    textQuery,
+    pageSize: Math.min(maxResults, 20),
+    locationBias: {
+      circle: {
+        center: { latitude: lat, longitude: lng },
+        radius: Math.min(Math.max(radiusMeters, 1), 50000),
+      },
+    },
+  });
+  return places;
 }
