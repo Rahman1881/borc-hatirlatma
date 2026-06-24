@@ -8,6 +8,8 @@ import {
   getSchedules,
   saveSchedules,
   broadcast,
+  isShiftReportEnabled,
+  setShiftReportEnabled,
   type ReportSchedule,
 } from "@/lib/telegram";
 
@@ -36,6 +38,7 @@ async function buildStatus() {
     botError,
     chats: listChats(),
     schedules: getSchedules(),
+    vardiyaEnabled: isShiftReportEnabled(),
   };
 }
 
@@ -69,6 +72,14 @@ export async function POST(req: NextRequest) {
         : [];
       saveSchedules(schedules);
       return NextResponse.json({ success: true, schedules: getSchedules() });
+    }
+
+    if (action === "vardiya") {
+      setShiftReportEnabled(Boolean(body.enabled));
+      return NextResponse.json({
+        success: true,
+        vardiyaEnabled: isShiftReportEnabled(),
+      });
     }
 
     if (action === "test") {

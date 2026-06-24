@@ -8,7 +8,7 @@ type TgChat = { chatId: string; name: string; enabled: boolean; firstSeen: strin
 type TgSchedule = {
   id: string;
   label: string;
-  type: "daily" | "weekly";
+  type: "daily" | "weekly" | "news";
   time: string;
   weekday: number | null;
   enabled: boolean;
@@ -89,6 +89,7 @@ export default function AyarlarPage() {
   const [tgError, setTgError] = useState("");
   const [tgChats, setTgChats] = useState<TgChat[]>([]);
   const [tgSchedules, setTgSchedules] = useState<TgSchedule[]>([]);
+  const [tgVardiya, setTgVardiya] = useState(true);
   const [tgSaving, setTgSaving] = useState(false);
   const [tgMsg, setTgMsg] = useState("");
   const [tgTesting, setTgTesting] = useState(false);
@@ -205,6 +206,7 @@ export default function AyarlarPage() {
     botError?: string;
     chats?: TgChat[];
     schedules?: TgSchedule[];
+    vardiyaEnabled?: boolean;
   }) {
     setTgConfigured(!!d.configured);
     setTgMasked(d.masked || "");
@@ -212,6 +214,7 @@ export default function AyarlarPage() {
     setTgError(d.botError || "");
     if (d.chats) setTgChats(d.chats);
     if (d.schedules) setTgSchedules(d.schedules);
+    if (typeof d.vardiyaEnabled === "boolean") setTgVardiya(d.vardiyaEnabled);
   }
 
   async function saveTelegram() {
@@ -264,6 +267,19 @@ export default function AyarlarPage() {
       });
     } catch {
       // sessizce geç; bir sonraki kayıtta tekrar denenir
+    }
+  }
+
+  async function saveTgVardiya(enabled: boolean) {
+    setTgVardiya(enabled);
+    try {
+      await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "vardiya", enabled }),
+      });
+    } catch {
+      // sessizce geç
     }
   }
 
@@ -557,6 +573,29 @@ export default function AyarlarPage() {
             <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-foreground">
               <Clock className="h-3.5 w-3.5" /> Otomatik Raporlar
             </div>
+            <div className="mb-2 flex items-center justify-between gap-3 rounded-md bg-card px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">Vardiya Raporları</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Yeni vardiya dosyası düştükçe otomatik (günde ~3 kez)
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={tgVardiya}
+                onClick={() => saveTgVardiya(!tgVardiya)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  tgVardiya ? "bg-primary" : "bg-input ring-1 ring-border"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                    tgVardiya ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
             <div className="space-y-2">
               {tgSchedules.map((s, i) => (
                 <div
@@ -566,7 +605,12 @@ export default function AyarlarPage() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{s.label}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      {s.type === "weekly" ? "Haftalık · Pazartesi" : "Her gün"} · {s.time}
+                      {s.type === "weekly"
+                        ? "Haftalık · Pazartesi"
+                        : s.type === "news"
+                        ? "Her gün · Petrol & akaryakıt haberleri"
+                        : "Her gün · Önceki günün satış raporu"}{" "}
+                      · {s.time}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

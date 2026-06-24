@@ -140,6 +140,27 @@ async function fetchReport(type) {
   }
 }
 
+// Günlük haber bültenini (Google Haberler RSS + AI özet) getirir.
+async function fetchNews() {
+  try {
+    const d = await apiGet(`/api/ai/telegram/news`);
+    return d.text || "Haber bülteni üretilemedi.";
+  } catch {
+    return "Haber bülteni üretilemedi (sunucuya ulaşılamadı).";
+  }
+}
+
+// Yeni düşen vardiyaların raporlarını getirir (eski -> yeni sıralı). Her biri
+// gönderildiğinde sunucu tarafında "raporlandı" işaretlenir (tekrar gelmez).
+async function fetchPendingShifts() {
+  try {
+    const d = await apiGet(`/api/ai/telegram/pending-shifts`);
+    return Array.isArray(d.shifts) ? d.shifts : [];
+  } catch {
+    return [];
+  }
+}
+
 // Konuma en yakın potansiyel müşterileri (veya "devam" ile sonraki partiyi) getirir.
 async function fetchNearby(payload) {
   try {
@@ -291,7 +312,11 @@ async function schedulerTick() {
     const lastKey = `telegram_lastsent_${s.id}`;
     if (getSetting(lastKey) === today) continue; // bugün zaten gönderildi
 
-    const text = await fetchReport(s.type === "weekly" ? "weekly" : "daily");
+    // type: news = haber bülteni, weekly = haftalık, daily = önceki gün satış.
+    let text;
+    if (s.type === "news") text = await fetchNews();
+    else text = await fetchReport(s.type === "weekly" ? "weekly" : "daily");
+
     for (const chatId of chats) {
       try {
         await sendMessage(chatId, text, "HTML");
@@ -302,6 +327,27 @@ async function schedulerTick() {
     setSetting(lastKey, today);
     console.log(`[telegram] '${s.label}' raporu ${chats.length} kişiye gönderildi.`);
   }
+}
+
+// Vardiya yoklayıcı: VRD klasörüne yeni vardiya dosyası düştüyse o vardiyanın
+// raporunu tüm abonelere gönderir. Olay tabanlı (saate bağlı değil).
+async function shiftTick() {
+  if (!getToken()) return;
+  const chats = enabledChatIds();
+  if (chats.length === 0) return;
+  const shifts = await fetchPendingShifts();
+  if (shifts.length === 0) return;
+  for (const sh of shifts) {
+    if (!sh?.text) continue;
+    for (const chatId of chats) {
+      try {
+        await sendMessage(chatId, sh.text, "HTML");
+      } catch (e) {
+        console.error("[telegram] vardiya raporu gönderilemedi:", e?.message || e);
+      }
+    }
+  }
+  console.log(`[telegram] ${shifts.length} vardiya raporu ${chats.length} kişiye gönderildi.`);
 }
 
 async function main() {
@@ -325,6 +371,13 @@ async function main() {
   setInterval(() => {
     schedulerTick().catch((e) =>
       console.error("[telegram] zamanlayıcı hatası:", e?.message || e)
+    );
+  }, 30000);
+
+  // Vardiya yoklayıcı: her 30 saniyede bir yeni vardiya dosyası var mı bakar.
+  setInterval(() => {
+    shiftTick().catch((e) =>
+      console.error("[telegram] vardiya yoklayıcı hatası:", e?.message || e)
     );
   }, 30000);
 }

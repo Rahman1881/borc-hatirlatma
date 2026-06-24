@@ -128,7 +128,11 @@ export async function askGeminiJson<T>(
     contents: [{ role: "user", parts: [{ text: userText }] }],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 4096,
+      // Gemini 3.x flash "düşünme" tokenları bu bütçeden harcanır ve çok değişken
+      // olabilir (yüzlerce ila birkaç bin token). Düşük tutulursa düşünme bütçeyi
+      // tüketip JSON çıktısı yarıda kalır (MAX_TOKENS) ve parse hatası verir. Bu
+      // yüzden düşünme + çıktı birlikte sığsın diye yüksek tutulur.
+      maxOutputTokens: 8192,
       responseMimeType: "application/json",
     },
   };

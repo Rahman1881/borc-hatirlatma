@@ -18,29 +18,30 @@ export type TelegramChat = {
 
 // Otomatik rapor zamanlaması. time "HH:MM" 24 saat; weekday boşsa her gün,
 // 1-7 (Pzt-Paz) ise sadece o gün gönderilir.
+// type: daily = önceki günün satış özeti, weekly = haftalık, news = haber bülteni.
 export type ReportSchedule = {
   id: string;
   label: string;
-  type: "daily" | "weekly";
-  time: string; // "23:30"
+  type: "daily" | "weekly" | "news";
+  time: string; // "09:30"
   weekday: number | null; // 1-7 (Pzt=1) ya da null=her gün
   enabled: boolean;
 };
 
 export const DEFAULT_SCHEDULES: ReportSchedule[] = [
   {
-    id: "gunluk_kapanis",
-    label: "Günlük Kapanış Raporu",
+    id: "gunluk_satis",
+    label: "Günlük Satış Raporu (önceki gün)",
     type: "daily",
-    time: "23:30",
+    time: "09:30",
     weekday: null,
     enabled: true,
   },
   {
-    id: "sabah_brifing",
-    label: "Sabah Brifingi (dünün özeti)",
-    type: "daily",
-    time: "08:00",
+    id: "haberler",
+    label: "Günlük Petrol & Akaryakıt Bülteni",
+    type: "news",
+    time: "10:00",
     weekday: null,
     enabled: true,
   },
@@ -54,6 +55,22 @@ export const DEFAULT_SCHEDULES: ReportSchedule[] = [
   },
 ];
 
+// Vardiya raporları olay tabanlıdır (zamana değil, yeni dosyaya bağlı). Bu yüzden
+// ayrı bir aç/kapa anahtarıyla yönetilir (varsayılan açık).
+export function isShiftReportEnabled(): boolean {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get("telegram_vardiya_enabled") as { value: string } | undefined;
+  return row?.value !== "0"; // tanımlı değilse açık kabul et
+}
+
+export function setShiftReportEnabled(enabled: boolean): void {
+  getDb()
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+    .run("telegram_vardiya_enabled", enabled ? "1" : "0");
+}
+
 export function getTelegramToken(): string {
   const db = getDb();
   const row = db
@@ -66,8 +83,26 @@ export function isTelegramConfigured(): boolean {
   return getTelegramToken().length > 0;
 }
 
+// Zamanlama yapısı değiştikçe artırılır. Kayıtlı sürüm bundan eskiyse, eski
+// zamanlamalar (ör. "Sabah Brifingi", "Kapanış") yeni varsayılanlarla değiştirilir.
+const SCHEDULES_VERSION = "2";
+
 export function getSchedules(): ReportSchedule[] {
   const db = getDb();
+  const verRow = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get("telegram_schedules_version") as { value: string } | undefined;
+
+  // Sürüm eski/yoksa: yeni varsayılanlara geçir (tek seferlik).
+  if ((verRow?.value || "") !== SCHEDULES_VERSION) {
+    saveSchedules(DEFAULT_SCHEDULES);
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(
+      "telegram_schedules_version",
+      SCHEDULES_VERSION
+    );
+    return DEFAULT_SCHEDULES;
+  }
+
   const row = db
     .prepare("SELECT value FROM settings WHERE key = ?")
     .get("telegram_schedules") as { value: string } | undefined;

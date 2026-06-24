@@ -137,6 +137,23 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
+    -- Telegram vardiya raporu: VRD klasörüne yeni vardiya dosyası düşünce o vardiya
+    -- raporlanıp abonelere gönderilir. Aynı dosya iki kez gönderilmesin diye
+    -- gönderilen her dosya burada işaretlenir. İlk açılışta mevcut dosyalar toplu
+    -- olarak işaretlenir (geçmiş için spam atılmaz).
+    CREATE TABLE IF NOT EXISTS telegram_reported_shifts (
+      file TEXT PRIMARY KEY,
+      reported_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
+    -- Günlük haber bülteni önbelleği: aynı gün için haberler bir kez üretilir
+    -- (Google Haberler RSS + Gemini açıklaması), tekrar istenirse önbellekten döner.
+    CREATE TABLE IF NOT EXISTS telegram_news_cache (
+      gun TEXT PRIMARY KEY,           -- YYYY-MM-DD
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
     CREATE TABLE IF NOT EXISTS uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,
