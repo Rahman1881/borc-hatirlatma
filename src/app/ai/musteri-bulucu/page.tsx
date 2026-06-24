@@ -27,7 +27,7 @@ import {
   Clock,
 } from "lucide-react";
 
-const iller = ["Sakarya", "Kocaeli"];
+const iller = ["Sakarya", "Kocaeli", "Düzce"];
 const ilceler: Record<string, string[]> = {
   Sakarya: [
     "Tümü",
@@ -62,6 +62,17 @@ const ilceler: Record<string, string[]> = {
     "Karamürsel",
     "Kartepe",
     "Körfez",
+  ],
+  Düzce: [
+    "Tümü",
+    "Merkez",
+    "Akçakoca",
+    "Cumayeri",
+    "Çilimli",
+    "Gölyaka",
+    "Gümüşova",
+    "Kaynaşlı",
+    "Yığılca",
   ],
 };
 
@@ -107,8 +118,6 @@ type ScanHistoryEntry = {
 };
 
 const RESULTS_KEY = "carkpetrol_musteri_results";
-const SAVED_KEY = "carkpetrol_saved_customers";
-const HISTORY_KEY = "carkpetrol_scan_history";
 const HISTORY_LIMIT = 30;
 const PAGE_SIZE = 6;
 
@@ -175,7 +184,7 @@ export default function MusteriBulucuPage() {
       .catch(() => {});
   }, []);
 
-  // localStorage yükle
+  // Geçici tarama sonuçları (RESULTS_KEY) hâlâ tarayıcıda; geçici/cihaza özel veridir.
   useEffect(() => {
     try {
       const r = localStorage.getItem(RESULTS_KEY);
@@ -189,19 +198,20 @@ export default function MusteriBulucuPage() {
           if (p.leads.length > 0) setView("results");
         }
       }
-      const s = localStorage.getItem(SAVED_KEY);
-      if (s) {
-        const sv = JSON.parse(s) as SavedCustomer[];
-        if (Array.isArray(sv)) setSaved(sv);
-      }
-      const h = localStorage.getItem(HISTORY_KEY);
-      if (h) {
-        const hist = JSON.parse(h) as ScanHistoryEntry[];
-        if (Array.isArray(hist)) setHistory(hist);
-      }
     } catch {
       // bozuk kayıt — yok say
     }
+  }, []);
+
+  // Kayıtlı müşteriler ve geçmiş taramalar artık sunucuda (SQLite) tutulur.
+  useEffect(() => {
+    fetch("/api/ai/musteri-bulucu/store")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.saved)) setSaved(d.saved as SavedCustomer[]);
+        if (Array.isArray(d.history)) setHistory(d.history as ScanHistoryEntry[]);
+      })
+      .catch(() => {});
   }, []);
 
   const savedIds = useMemo(() => new Set(saved.map((s) => s.id)), [saved]);
@@ -218,38 +228,24 @@ export default function MusteriBulucuPage() {
     }
   }
 
+  // Müşteri Bulucu kalıcı verisi için sunucuya yazma yardımcıları.
+  function storePost(payload: Record<string, unknown>) {
+    fetch("/api/ai/musteri-bulucu/store", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+
   // Her tarama yapıldığında geçmişe (en yeni en üstte) ekler, son HISTORY_LIMIT kaydı tutar.
   function addToHistory(entry: ScanHistoryEntry) {
-    setHistory((h) => {
-      const next = [entry, ...h].slice(0, HISTORY_LIMIT);
-      try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      } catch {
-        // yok say
-      }
-      return next;
-    });
+    setHistory((h) => [entry, ...h].slice(0, HISTORY_LIMIT));
+    storePost({ action: "addHistory", entry });
   }
 
   function removeHistory(id: string) {
-    setHistory((h) => {
-      const next = h.filter((x) => x.id !== id);
-      try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      } catch {
-        // yok say
-      }
-      return next;
-    });
-  }
-
-  // Kayıtlı müşterileri her değişiklikte anında localStorage'a yaz (menü değişince kaybolmasın).
-  function persistSaved(list: SavedCustomer[]) {
-    try {
-      localStorage.setItem(SAVED_KEY, JSON.stringify(list));
-    } catch {
-      // yok say
-    }
+    setHistory((h) => h.filter((x) => x.id !== id));
+    storePost({ action: "removeHistory", id });
   }
 
   function toggleProfile(p: string) {
@@ -326,11 +322,8 @@ export default function MusteriBulucuPage() {
       note: "",
       status: "Yeni",
     };
-    setSaved((s) => {
-      const next = [sc, ...s];
-      persistSaved(next);
-      return next;
-    });
+    setSaved((s) => [sc, ...s]);
+    storePost({ action: "save", customer: sc });
     setResults((r) => {
       const n = r ? r.filter((x) => x.id !== l.id) : r;
       if (n) persistResults(n, lastRegion, scored);
@@ -339,18 +332,12 @@ export default function MusteriBulucuPage() {
   }
 
   function removeSaved(id: string) {
-    setSaved((s) => {
-      const next = s.filter((x) => x.id !== id);
-      persistSaved(next);
-      return next;
-    });
+    setSaved((s) => s.filter((x) => x.id !== id));
+    storePost({ action: "removeSaved", id });
   }
   function updateSaved(id: string, patch: Partial<SavedCustomer>) {
-    setSaved((s) => {
-      const next = s.map((x) => (x.id === id ? { ...x, ...patch } : x));
-      persistSaved(next);
-      return next;
-    });
+    setSaved((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    storePost({ action: "updateSaved", id, patch });
   }
 
   // Filtre ekranına geri dön (önceki sonuçlar yeni tarama yapılana kadar saklı kalır).
@@ -365,7 +352,10 @@ export default function MusteriBulucuPage() {
   }
 
   const scanRegion = ilce && ilce !== "Tümü" ? `${ilce} / ${il}` : il;
-  const visible = results ?? [];
+  // Sonuçları değerlendirme (yorum) sayısına göre çoktan aza sırala.
+  const visible = [...(results ?? [])].sort(
+    (a, b) => (b.ratingCount ?? 0) - (a.ratingCount ?? 0)
+  );
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const pageItems = visible.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 

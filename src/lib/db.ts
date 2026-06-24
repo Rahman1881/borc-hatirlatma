@@ -82,6 +82,51 @@ function initDb(db: Database.Database) {
       PRIMARY KEY (tarih, plaka, marka, yakit)
     );
 
+    -- Telegram bot aboneleri: bota yazan herkesin chat'i burada tutulur.
+    -- Otomatik raporlar enabled=1 olan tüm chat'lere gönderilir.
+    CREATE TABLE IF NOT EXISTS telegram_chats (
+      chat_id TEXT PRIMARY KEY,
+      name TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      first_seen TEXT DEFAULT (datetime('now','localtime')),
+      last_seen TEXT DEFAULT (datetime('now','localtime'))
+    );
+
+    -- AI Asistan sohbet geçmişi (eski "Eski Sohbetler" bölümü).
+    -- Önceden tarayıcı localStorage'ında tutuluyordu; 7/24 açık sunucuya
+    -- geçtiğimiz için artık veritabanında saklanır (cihazdan bağımsız, kalıcı).
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL DEFAULT 'Yeni Sohbet',
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL,
+      role TEXT NOT NULL,                 -- 'user' | 'ai'
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
+    );
+
+    -- Müşteri Bulucu: kaydedilen müşteriler ve geçmiş taramalar.
+    -- Önceden tarayıcı localStorage'ında tutuluyordu; 7/24 açık sunucuya geçince
+    -- veritabanına alındı. Tam nesne JSON olarak data sütununda saklanır;
+    -- diğer sütunlar sıralama/güncelleme içindir.
+    CREATE TABLE IF NOT EXISTS musteri_saved (
+      id TEXT PRIMARY KEY,              -- işletme (lead) id'si
+      saved_at INTEGER NOT NULL,        -- ms cinsinden zaman damgası
+      data TEXT NOT NULL                -- SavedCustomer JSON
+    );
+
+    CREATE TABLE IF NOT EXISTS musteri_history (
+      id TEXT PRIMARY KEY,
+      scanned_at INTEGER NOT NULL,      -- ms cinsinden zaman damgası
+      data TEXT NOT NULL                -- ScanHistoryEntry JSON
+    );
+
     CREATE TABLE IF NOT EXISTS uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,

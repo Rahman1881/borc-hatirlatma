@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { askGemini, type ChatMessage } from "@/lib/gemini";
 import { kpis, weeklySales, fuelMix, shifts, alerts } from "@/lib/ai-mock";
+import { buildRealStationContext } from "@/lib/station-report";
 
-// Şimdilik mock verilerden bir bağlam (context) hazırlıyoruz. SiberPet/Uyumsoft
-// bağlandığında bu fonksiyon gerçek verilerden beslenecek.
+// Pompa (VRD) satış verisi gerçek; market/tank gibi henüz bağlı olmayan kısımlar
+// için örnek (mock) veri tamamlayıcı olarak eklenir.
 function buildBusinessContext(): string {
   const kpiLines = kpis
     .map((k) => `- ${k.label}: ${k.value} (değişim ${k.change}, ${k.sub})`)
@@ -26,7 +27,15 @@ function buildBusinessContext(): string {
     .map((a) => `- [${a.tone}] ${a.title}: ${a.detail} (${a.time})`)
     .join("\n");
 
-  return `GÜNCEL İSTASYON VERİLERİ (örnek/mock — gerçek entegrasyon sonrası canlı veriyle değişecek):
+  // Gerçek pompa satış verisi (VRD) — varsa bağlamın başına eklenir.
+  let realData = "";
+  try {
+    realData = buildRealStationContext();
+  } catch {
+    realData = "";
+  }
+
+  return `${realData ? realData + "\n\n---\n\n" : ""}TAMAMLAYICI ÖRNEK VERİLER (market/tank/uyarılar henüz canlı bağlı değil — örnek/mock):
 
 Günlük KPI'lar:
 ${kpiLines}
@@ -52,7 +61,10 @@ Kurallar:
 - Sadece sana verilen verilere dayan. Veride olmayan bir şey sorulursa dürüstçe "bu veri henüz bağlı değil (SiberPet/Uyumsoft entegrasyonu)" de.
 - Rakamları Türk Lirası (₺) ve binlik ayraçla, kısa ve okunur biçimde ver.
 - Patron gibi pratik konuş: önce cevap, sonra kısa gerekçe, gerekirse 1 öneri.
-- Gereksiz uzun açıklama yapma; mobil/Telegram'da okunacak gibi yaz.`;
+- Gereksiz uzun açıklama yapma; mobil/Telegram'da okunacak gibi yaz.
+- BİÇİMLENDİRME: Düz metin yaz. Markdown KULLANMA. Kalın yazı için ** veya __ KULLANMA,
+  başlık için # kullanma. Liste gerekiyorsa satır başına "• " koy (yıldız * değil).
+  Vurgu gerekiyorsa kelimeyi olduğu gibi yaz; yıldız/alt çizgi ekleme.`;
 
 export async function POST(req: NextRequest) {
   try {

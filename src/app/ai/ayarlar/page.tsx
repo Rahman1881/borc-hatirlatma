@@ -2,7 +2,17 @@
 
 import { useState, useEffect } from "react";
 import { Panel, SectionTitle, Pill } from "@/components/ai/ui";
-import { Database, FileText, Send, Bot, Check, X, KeyRound, FolderOpen, Clock } from "lucide-react";
+import { Database, FileText, Bot, Check, X, KeyRound, FolderOpen, Clock, Users } from "lucide-react";
+
+type TgChat = { chatId: string; name: string; enabled: boolean; firstSeen: string; lastSeen: string };
+type TgSchedule = {
+  id: string;
+  label: string;
+  type: "daily" | "weekly";
+  time: string;
+  weekday: number | null;
+  enabled: boolean;
+};
 
 type Integration = {
   key: string;
@@ -34,15 +44,6 @@ const initial: Integration[] = [
     ready: false,
     connected: false,
     color: "#f97316",
-  },
-  {
-    key: "telegram",
-    name: "Telegram Bot",
-    desc: "Anlık sohbet ve otomatik raporlar",
-    icon: Send,
-    ready: false,
-    connected: false,
-    color: "#229ED9",
   },
   {
     key: "gemini",
@@ -80,6 +81,18 @@ export default function AyarlarPage() {
   const [vrdSaving, setVrdSaving] = useState(false);
   const [vrdSavedMsg, setVrdSavedMsg] = useState("");
 
+  // Telegram bot
+  const [tgToken, setTgToken] = useState("");
+  const [tgMasked, setTgMasked] = useState("");
+  const [tgConfigured, setTgConfigured] = useState(false);
+  const [tgUsername, setTgUsername] = useState("");
+  const [tgError, setTgError] = useState("");
+  const [tgChats, setTgChats] = useState<TgChat[]>([]);
+  const [tgSchedules, setTgSchedules] = useState<TgSchedule[]>([]);
+  const [tgSaving, setTgSaving] = useState(false);
+  const [tgMsg, setTgMsg] = useState("");
+  const [tgTesting, setTgTesting] = useState(false);
+
   // İstasyon bilgileri
   const [station, setStation] = useState({
     station_name: "",
@@ -108,6 +121,11 @@ export default function AyarlarPage() {
           s.map((x) => (x.key === "gemini" ? { ...x, connected: !!d.configured } : x))
         );
       })
+      .catch(() => {});
+
+    fetch("/api/ai/telegram")
+      .then((r) => r.json())
+      .then((d) => applyTgStatus(d))
       .catch(() => {});
   }, []);
 
@@ -177,6 +195,75 @@ export default function AyarlarPage() {
       setVrdSavedMsg(err instanceof Error ? err.message : "Hata oluştu.");
     } finally {
       setVrdSaving(false);
+    }
+  }
+
+  function applyTgStatus(d: {
+    configured?: boolean;
+    masked?: string;
+    botUsername?: string;
+    botError?: string;
+    chats?: TgChat[];
+    schedules?: TgSchedule[];
+  }) {
+    setTgConfigured(!!d.configured);
+    setTgMasked(d.masked || "");
+    setTgUsername(d.botUsername || "");
+    setTgError(d.botError || "");
+    if (d.chats) setTgChats(d.chats);
+    if (d.schedules) setTgSchedules(d.schedules);
+  }
+
+  async function saveTelegram() {
+    setTgSaving(true);
+    setTgMsg("");
+    try {
+      const res = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save", token: tgToken }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.error || "Kaydedilemedi.");
+      applyTgStatus(d);
+      setTgToken("");
+      setTgMsg(d.botUsername ? `Bağlandı: @${d.botUsername}` : "Kaydedildi.");
+    } catch (err) {
+      setTgMsg(err instanceof Error ? err.message : "Hata oluştu.");
+    } finally {
+      setTgSaving(false);
+    }
+  }
+
+  async function testTelegram() {
+    setTgTesting(true);
+    setTgMsg("");
+    try {
+      const res = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "test" }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.error || "Test başarısız.");
+      setTgMsg(d.note || `Test gönderildi: ${d.sent} kişi (${d.failed} hata).`);
+    } catch (err) {
+      setTgMsg(err instanceof Error ? err.message : "Hata oluştu.");
+    } finally {
+      setTgTesting(false);
+    }
+  }
+
+  async function saveTgSchedules(next: TgSchedule[]) {
+    setTgSchedules(next);
+    try {
+      await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "schedules", schedules: next }),
+      });
+    } catch {
+      // sessizce geç; bir sonraki kayıtta tekrar denenir
     }
   }
 
@@ -378,6 +465,150 @@ export default function AyarlarPage() {
             {vrdSavedMsg && (
               <span className="text-xs text-muted-foreground">{vrdSavedMsg}</span>
             )}
+          </div>
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionTitle
+          title="Telegram Bot"
+          action={
+            tgConfigured && tgUsername ? (
+              <Pill tone="positive">
+                <Check className="h-3 w-3" /> @{tgUsername}
+              </Pill>
+            ) : tgConfigured ? (
+              <Pill tone="warning">
+                <KeyRound className="h-3 w-3" /> Doğrulanamadı
+              </Pill>
+            ) : (
+              <Pill tone="warning">
+                <KeyRound className="h-3 w-3" /> Token gerekli
+              </Pill>
+            )
+          }
+        />
+        <p className="mb-4 -mt-2 text-sm text-muted-foreground">
+          Patron ve ekip, Telegram&apos;dan bota soru sorabilir ve otomatik raporları
+          buradan alır. Botu Telegram&apos;da{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">@BotFather</code>{" "}
+          ile oluşturup verdiği token&apos;ı aşağıya girin. Token sunucuda saklanır.
+        </p>
+        <div className="space-y-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-muted-foreground">
+              Bot Token
+            </span>
+            <input
+              type="password"
+              value={tgToken}
+              onChange={(e) => setTgToken(e.target.value)}
+              placeholder={
+                tgConfigured ? `Kayıtlı: ${tgMasked} (değiştirmek için yeni token girin)` : "123456789:ABC-DEF..."
+              }
+              spellCheck={false}
+              className="h-10 rounded-lg border bg-muted/50 px-3 font-mono text-sm outline-none focus:border-primary"
+            />
+          </label>
+          {tgError && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">{tgError}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={saveTelegram}
+              disabled={tgSaving}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {tgSaving ? "Kaydediliyor…" : "Kaydet"}
+            </button>
+            <button
+              onClick={testTelegram}
+              disabled={tgTesting || !tgConfigured}
+              className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {tgTesting ? "Gönderiliyor…" : "Test mesajı gönder"}
+            </button>
+            {tgMsg && <span className="text-xs text-muted-foreground">{tgMsg}</span>}
+          </div>
+
+          <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs">
+            <div className="mb-1.5 flex items-center gap-1.5 font-medium text-foreground">
+              <Users className="h-3.5 w-3.5" /> Aboneler ({tgChats.length})
+            </div>
+            {tgChats.length === 0 ? (
+              <p className="text-muted-foreground">
+                Henüz kimse bota yazmadı. Bota{" "}
+                <code className="rounded bg-muted px-1 py-0.5">/start</code> yazan
+                herkes otomatik abone olur ve raporları almaya başlar.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {tgChats.map((c) => (
+                  <li key={c.chatId} className="flex items-center justify-between gap-2">
+                    <span className="text-foreground">{c.name || "İsimsiz"}</span>
+                    <span className="font-mono text-muted-foreground">{c.chatId}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="rounded-lg border bg-muted/40 px-3 py-3">
+            <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-foreground">
+              <Clock className="h-3.5 w-3.5" /> Otomatik Raporlar
+            </div>
+            <div className="space-y-2">
+              {tgSchedules.map((s, i) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between gap-3 rounded-md bg-card px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{s.label}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {s.type === "weekly" ? "Haftalık · Pazartesi" : "Her gün"} · {s.time}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="time"
+                      value={s.time}
+                      onChange={(e) => {
+                        const next = tgSchedules.map((x, idx) =>
+                          idx === i ? { ...x, time: e.target.value } : x
+                        );
+                        saveTgSchedules(next);
+                      }}
+                      className="h-8 rounded-md border bg-muted/50 px-2 text-xs outline-none focus:border-primary"
+                    />
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={s.enabled}
+                      onClick={() => {
+                        const next = tgSchedules.map((x, idx) =>
+                          idx === i ? { ...x, enabled: !x.enabled } : x
+                        );
+                        saveTgSchedules(next);
+                      }}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                        s.enabled ? "bg-primary" : "bg-input ring-1 ring-border"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                          s.enabled ? "translate-x-6" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Raporlar gerçek pompa (VRD) satış verisinden üretilir. Çalışması için
+              sunucu bilgisayarı açık olmalıdır.
+            </p>
           </div>
         </div>
       </Panel>

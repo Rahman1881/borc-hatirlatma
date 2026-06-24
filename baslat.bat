@@ -52,5 +52,9 @@ echo.
 :: Open browser automatically
 start http://localhost:3000
 
+:: Telegram bot iscisini ayri (kucuk) pencerede baslat.
+:: Token Ayarlar'dan girilmemisse bot bekler; girilince otomatik calisir.
+start "Telegram Bot" /min cmd /c node telegram-bot.mjs
+
 :: Start the server
 call npm start
