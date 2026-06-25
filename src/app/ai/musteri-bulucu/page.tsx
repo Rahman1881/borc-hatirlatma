@@ -25,6 +25,9 @@ import {
   Radar,
   History,
   Clock,
+  Send,
+  X,
+  User,
 } from "lucide-react";
 
 const iller = ["Sakarya", "Kocaeli", "Düzce"];
@@ -166,6 +169,19 @@ export default function MusteriBulucuPage() {
 
   // kayıtlılar
   const [saved, setSaved] = useState<SavedCustomer[]>([]);
+
+  // Telegram'a gönderme
+  const [tgChats, setTgChats] = useState<
+    { chatId: string; name: string; enabled: boolean }[]
+  >([]);
+  const [showSendModal, setShowSendModal] = useState(false);
+  const [sendingTg, setSendingTg] = useState(false);
+  const [tgMsg, setTgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Gönder penceresi açıldığında hangi liste gönderilecek (sonuçlar ya da geçmiş tarama).
+  const [sendPayload, setSendPayload] = useState<{
+    leads: Lead[];
+    region: string;
+  } | null>(null);
 
   // geçmiş taramalar
   const [history, setHistory] = useState<ScanHistoryEntry[]>([]);
@@ -343,6 +359,57 @@ export default function MusteriBulucuPage() {
   function startNewScan() {
     setView("form");
     setError("");
+  }
+
+  // Telegram abonelerini çekip "gönder" penceresini açar (verilen listeyle).
+  function openSendModal(leads: Lead[], region: string) {
+    setSendPayload({ leads, region });
+    setTgMsg(null);
+    setShowSendModal(true);
+    fetch("/api/ai/telegram")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.chats)) {
+          setTgChats(
+            (d.chats as { chatId: string; name: string; enabled: boolean }[]).filter(
+              (c) => c.enabled
+            )
+          );
+        }
+      })
+      .catch(() => {});
+  }
+
+  // Seçilen listeyi (sonuçlar ya da geçmiş tarama) seçilen aboneye /yakin formatında gönderir.
+  async function sendLeadsTo(chatId: string) {
+    const leads = sendPayload?.leads ?? [];
+    setSendingTg(true);
+    setTgMsg(null);
+    try {
+      const r = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send-leads",
+          chatId,
+          region: sendPayload?.region ?? "",
+          leads,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setTgMsg({ ok: false, text: d.error || "Gönderilemedi." });
+      } else {
+        setTgMsg({
+          ok: true,
+          text: `Gönderildi · ${leads.length} işletme (${d.chunks} mesaj).`,
+        });
+      }
+    } catch {
+      setTgMsg({ ok: false, text: "Sunucuya ulaşılamadı." });
+    } finally {
+      setSendingTg(false);
+    }
   }
 
   // Geçmiş bir taramayı kendi sekmesinde, detay görünümünde aç.
@@ -558,12 +625,22 @@ export default function MusteriBulucuPage() {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={startNewScan}
-                className="flex shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-              >
-                <Search className="h-4 w-4" /> Farklı Bir Tarama Yap
-              </button>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                {visible.length > 0 && (
+                  <button
+                    onClick={() => openSendModal(visible, lastRegion)}
+                    className="flex items-center justify-center gap-2 rounded-lg border border-[#229ED9]/40 bg-[#229ED9]/10 px-4 py-2 text-sm font-medium text-[#229ED9] transition-colors hover:bg-[#229ED9]/20"
+                  >
+                    <Send className="h-4 w-4" /> Telegram&apos;a Gönder
+                  </button>
+                )}
+                <button
+                  onClick={startNewScan}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                >
+                  <Search className="h-4 w-4" /> Farklı Bir Tarama Yap
+                </button>
+              </div>
             </div>
           </Panel>
 
@@ -617,6 +694,18 @@ export default function MusteriBulucuPage() {
 
       {scanning && <ScanningModal region={scanRegion} count={selected.length} />}
 
+      {showSendModal && (
+        <SendToTelegramModal
+          chats={tgChats}
+          count={sendPayload?.leads.length ?? 0}
+          region={sendPayload?.region ?? ""}
+          sending={sendingTg}
+          msg={tgMsg}
+          onSend={sendLeadsTo}
+          onClose={() => setShowSendModal(false)}
+        />
+      )}
+
       {tab === "history" && !historyDetail && (
         <HistoryList
           history={history}
@@ -635,6 +724,7 @@ export default function MusteriBulucuPage() {
           savedIds={savedIds}
           onSave={saveCustomer}
           onBack={() => setHistoryDetail(null)}
+          onSend={openSendModal}
         />
       )}
 
@@ -1034,11 +1124,13 @@ function HistoryDetail({
   savedIds,
   onSave,
   onBack,
+  onSend,
 }: {
   entry: ScanHistoryEntry;
   savedIds: Set<string>;
   onSave: (l: Lead) => void;
   onBack: () => void;
+  onSend: (leads: Lead[], region: string) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -1061,12 +1153,22 @@ function HistoryDetail({
               </p>
             </div>
           </div>
-          <button
-            onClick={onBack}
-            className="flex shrink-0 items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ChevronLeft className="h-4 w-4" /> Geçmiş Taramalar
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {entry.leads.length > 0 && (
+              <button
+                onClick={() => onSend(entry.leads, entry.region)}
+                className="flex items-center justify-center gap-2 rounded-lg border border-[#229ED9]/40 bg-[#229ED9]/10 px-4 py-2 text-sm font-medium text-[#229ED9] transition-colors hover:bg-[#229ED9]/20"
+              >
+                <Send className="h-4 w-4" /> Telegram&apos;a Gönder
+              </button>
+            )}
+            <button
+              onClick={onBack}
+              className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <ChevronLeft className="h-4 w-4" /> Geçmiş Taramalar
+            </button>
+          </div>
         </div>
 
         {entry.profiles.length > 0 && (
@@ -1173,6 +1275,93 @@ function ScanningModal({ region, count }: { region: string; count: number }) {
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SendToTelegramModal({
+  chats,
+  count,
+  region,
+  sending,
+  msg,
+  onSend,
+  onClose,
+}: {
+  chats: { chatId: string; name: string; enabled: boolean }[];
+  count: number;
+  region: string;
+  sending: boolean;
+  msg: { ok: boolean; text: string } | null;
+  onSend: (chatId: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border bg-card p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-lg bg-[#229ED9]/15 text-[#229ED9]">
+              <Send className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold">Telegram&apos;a Gönder</p>
+              <p className="text-xs text-muted-foreground">
+                {count} işletme · {region || "tarama sonuçları"}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="Kapat"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <p className="mt-4 text-xs font-medium text-muted-foreground">
+          Listeyi hangi aboneye gönderelim? (telefon + konum + harita dahil)
+        </p>
+        <div className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+          {chats.length === 0 ? (
+            <p className="rounded-lg border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+              Henüz bota yazan abone yok. Kişi Telegram&apos;dan bota{" "}
+              <b className="text-foreground">/start</b> yazınca burada görünür.
+            </p>
+          ) : (
+            chats.map((c) => (
+              <button
+                key={c.chatId}
+                onClick={() => onSend(c.chatId)}
+                disabled={sending}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40 disabled:opacity-50"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="grid h-8 w-8 place-items-center rounded-full bg-muted text-foreground">
+                    <User className="h-4 w-4" />
+                  </span>
+                  <span className="font-medium">{c.name || c.chatId}</span>
+                </span>
+                <Send className="h-4 w-4 text-muted-foreground" />
+              </button>
+            ))
+          )}
+        </div>
+
+        {sending && (
+          <p className="mt-3 text-sm text-muted-foreground">Gönderiliyor…</p>
+        )}
+        {msg && (
+          <p
+            className={`mt-3 text-sm font-medium ${
+              msg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600"
+            }`}
+          >
+            {msg.text}
+          </p>
+        )}
       </div>
     </div>
   );

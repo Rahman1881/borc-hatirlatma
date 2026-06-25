@@ -8,7 +8,7 @@ type TgChat = { chatId: string; name: string; enabled: boolean; firstSeen: strin
 type TgSchedule = {
   id: string;
   label: string;
-  type: "daily" | "weekly" | "news";
+  type: "daily" | "weekly" | "news" | "prices";
   time: string;
   weekday: number | null;
   enabled: boolean;
@@ -609,6 +609,8 @@ export default function AyarlarPage() {
                         ? "Haftalık · Pazartesi"
                         : s.type === "news"
                         ? "Her gün · Petrol & akaryakıt haberleri"
+                        : s.type === "prices"
+                        ? "Her gün · Rakip fiyatları (pahalıdan ucuza)"
                         : "Her gün · Önceki günün satış raporu"}{" "}
                       · {s.time}
                     </p>

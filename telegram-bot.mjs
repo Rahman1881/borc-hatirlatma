@@ -150,6 +150,16 @@ async function fetchNews() {
   }
 }
 
+// Rakip akaryakıt fiyat karşılaştırmasını (benzin + motorin, pahalıdan ucuza) getirir.
+async function fetchPrices() {
+  try {
+    const d = await apiGet(`/api/ai/telegram/prices`);
+    return d.text || "Rakip fiyat raporu üretilemedi.";
+  } catch {
+    return "Rakip fiyat raporu üretilemedi (sunucuya ulaşılamadı).";
+  }
+}
+
 // Yeni düşen vardiyaların raporlarını getirir (eski -> yeni sıralı). Her biri
 // gönderildiğinde sunucu tarafında "raporlandı" işaretlenir (tekrar gelmez).
 async function fetchPendingShifts() {
@@ -312,9 +322,11 @@ async function schedulerTick() {
     const lastKey = `telegram_lastsent_${s.id}`;
     if (getSetting(lastKey) === today) continue; // bugün zaten gönderildi
 
-    // type: news = haber bülteni, weekly = haftalık, daily = önceki gün satış.
+    // type: news = haber bülteni, prices = rakip fiyat, weekly = haftalık,
+    // daily = önceki gün satış.
     let text;
     if (s.type === "news") text = await fetchNews();
+    else if (s.type === "prices") text = await fetchPrices();
     else text = await fetchReport(s.type === "weekly" ? "weekly" : "daily");
 
     for (const chatId of chats) {

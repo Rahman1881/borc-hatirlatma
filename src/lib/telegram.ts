@@ -18,11 +18,12 @@ export type TelegramChat = {
 
 // Otomatik rapor zamanlaması. time "HH:MM" 24 saat; weekday boşsa her gün,
 // 1-7 (Pzt-Paz) ise sadece o gün gönderilir.
-// type: daily = önceki günün satış özeti, weekly = haftalık, news = haber bülteni.
+// type: daily = önceki günün satış özeti, weekly = haftalık, news = haber bülteni,
+// prices = rakip akaryakıt fiyat karşılaştırması.
 export type ReportSchedule = {
   id: string;
   label: string;
-  type: "daily" | "weekly" | "news";
+  type: "daily" | "weekly" | "news" | "prices";
   time: string; // "09:30"
   weekday: number | null; // 1-7 (Pzt=1) ya da null=her gün
   enabled: boolean;
@@ -34,6 +35,14 @@ export const DEFAULT_SCHEDULES: ReportSchedule[] = [
     label: "Günlük Satış Raporu (önceki gün)",
     type: "daily",
     time: "09:30",
+    weekday: null,
+    enabled: true,
+  },
+  {
+    id: "fiyat_rekabet",
+    label: "Rakip Fiyat Karşılaştırması",
+    type: "prices",
+    time: "09:15",
     weekday: null,
     enabled: true,
   },
@@ -85,7 +94,7 @@ export function isTelegramConfigured(): boolean {
 
 // Zamanlama yapısı değiştikçe artırılır. Kayıtlı sürüm bundan eskiyse, eski
 // zamanlamalar (ör. "Sabah Brifingi", "Kapanış") yeni varsayılanlarla değiştirilir.
-const SCHEDULES_VERSION = "2";
+const SCHEDULES_VERSION = "3";
 
 export function getSchedules(): ReportSchedule[] {
   const db = getDb();

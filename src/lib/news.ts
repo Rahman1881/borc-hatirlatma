@@ -26,6 +26,58 @@ function todayIso(): string {
   ).padStart(2, "0")}`;
 }
 
+// RSS pubDate (RFC822, ör. "Tue, 24 Jun 2026 09:30:00 GMT") -> zaman damgası (ms).
+// Ayrıştırılamazsa null döner.
+function parsePubDate(s: string): number | null {
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : t;
+}
+
+// Dünün başlangıcı (yerel saat, 00:00). Bülten yalnızca bundan sonraki haberleri
+// içerir; böylece eski/bayat başlıklar elenir, sadece dün + bugünün gelişmeleri kalır.
+function yesterdayStart(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 1);
+  return d.getTime();
+}
+
+const TR_MONTHS: Record<string, number> = {
+  ocak: 0, şubat: 1, mart: 2, nisan: 3, mayıs: 4, haziran: 5,
+  temmuz: 6, ağustos: 7, eylül: 8, ekim: 9, kasım: 10, aralık: 11,
+};
+
+// Google bazı "her güne" ait fiyat haberlerini eski içerikle ama yeni pubDate ile
+// yeniden yayınlar (ör. başlıkta "8 Mayıs" geçer ama feed'de güncel görünür). Başlıkta
+// geçen "8 Mayıs", "4 Nisan 2026" gibi tarih referanslarını bulur; başlık bir tarih
+// içeriyor ve referans verilen EN YENİ tarih cutoff'tan eskiyse (bayat içerik) false
+// döner. Tarih referansı yoksa true (pubDate'e güvenilir).
+function titleDateOk(title: string, cutoff: number): boolean {
+  const lc = title.toLocaleLowerCase("tr");
+  const re =
+    /(\d{1,2})\s+(ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)(?:\s+(\d{4}))?/g;
+  const now = Date.now();
+  let newest = -Infinity;
+  let found = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(lc)) !== null) {
+    const day = Number(m[1]);
+    const month = TR_MONTHS[m[2]];
+    const year = m[3] ? Number(m[3]) : new Date().getFullYear();
+    if (day < 1 || day > 31 || month == null) continue;
+    let ts = new Date(year, month, day).getTime();
+    // Yıl yazılmamışsa ve tarih bugünden çok ilerideyse, bir önceki yıla ait kabul et.
+    if (!m[3] && ts > now + 7 * 86_400_000) {
+      ts = new Date(year - 1, month, day).getTime();
+    }
+    found = true;
+    if (ts > newest) newest = ts;
+  }
+  if (!found) return true;
+  return newest >= cutoff;
+}
+
 async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -121,21 +173,31 @@ export async function buildNewsReport(force = false): Promise<ReportResult> {
     )
   );
 
-  // Tekilleştir (başlığa göre), en fazla 20 aday başlık.
+  // Sadece dün (00:00) ve sonrasına ait haberleri al; eski/bayat başlıkları ele.
+  const cutoff = yesterdayStart();
+
+  // Tekilleştir (başlığa göre), tarihe göre süz, en yeni önce sırala, en fazla 20 aday.
   const seen = new Set<string>();
-  const candidates: NewsItem[] = [];
+  const dated: { item: NewsItem; ts: number }[] = [];
   for (const list of results) {
     for (const it of list) {
       const key = it.title.toLocaleLowerCase("tr");
       if (seen.has(key)) continue;
+      const ts = parsePubDate(it.pubDate);
+      if (ts == null || ts < cutoff) continue; // tarihsiz ya da eski -> ele
+      if (!titleDateOk(it.title, cutoff)) continue; // başlıkta eski tarih -> ele
       seen.add(key);
-      candidates.push(it);
-      if (candidates.length >= 20) break;
+      dated.push({ item: it, ts });
     }
   }
+  dated.sort((a, b) => b.ts - a.ts); // en yeni önce
+  const candidates: NewsItem[] = dated.slice(0, 20).map((d) => d.item);
 
   if (candidates.length === 0) {
-    return { ok: false, text: "📰 Bugün için haber bulunamadı (kaynağa ulaşılamadı)." };
+    return {
+      ok: false,
+      text: "📰 Dün için öne çıkan petrol/akaryakıt haberi bulunamadı.",
+    };
   }
 
   // Gemini'den 5 haber seç + kısa Türkçe açıklama yazdır.
@@ -143,20 +205,21 @@ export async function buildNewsReport(force = false): Promise<ReportResult> {
     .map((c, i) => `${i + 1}. ${c.title}${c.source ? ` (${c.source})` : ""}`)
     .join("\n");
 
-  const system = `Sen bir akaryakıt istasyonu patronu için günlük haber bülteni hazırlıyorsun.
-Sana verilen haber başlıklarından, PETROL (global/Brent fiyatları), TÜRKİYE AKARYAKIT
-(benzin/motorin/LPG fiyat-zam) ve bunları etkileyen EKONOMİ konularıyla EN İLGİLİ 5 tanesini seç.
-Alakasız (magazin, spor, siyaset vb.) başlıkları ELE. Her seçtiğin haber için patronun işine
-yarayacak, 1-2 cümlelik, net Türkçe bir açıklama yaz. Açıklamada uydurma rakam verme; sadece
-başlıktan çıkarılabilecek bilgiyi ve genel bağlamı yaz.
+  const system = `Sen bir akaryakıt istasyonu patronu için GÜNLÜK haber bülteni hazırlıyorsun.
+Sana verilen başlıklar yalnızca DÜNE ve bugüne ait, en yeni haberlerdir (en yeni önce sıralı).
+Bunlardan PETROL (global/Brent fiyatları), TÜRKİYE AKARYAKIT (benzin/motorin/LPG fiyat-zam) ve
+bunları etkileyen EKONOMİ konularıyla EN İLGİLİ ve EN GÜNCEL 5 tanesini seç. Eski/genel/bayat
+görünen ya da alakasız (magazin, spor, siyaset vb.) başlıkları ELE. Her seçtiğin haber için
+patronun işine yarayacak, 1-2 cümlelik, net Türkçe bir açıklama yaz. Açıklamada uydurma rakam
+verme; sadece başlıktan çıkarılabilecek bilgiyi ve güncel bağlamı yaz.
 Yanıtı SADECE şu JSON biçiminde ver: {"haberler":[{"baslik":"...","aciklama":"..."}]}
-Tam olarak 5 öğe olsun (yeterli ilgili haber yoksa daha az olabilir).`;
+Tam olarak 5 öğe olsun (yeterli güncel haber yoksa daha az olabilir).`;
 
   let parsed: { haberler?: { baslik?: string; aciklama?: string }[] };
   try {
     parsed = await askGeminiJson<{ haberler?: { baslik?: string; aciklama?: string }[] }>(
       system,
-      `Bugünün haber başlıkları:\n${list}`
+      `Dünden bugüne en güncel haber başlıkları (en yeni önce):\n${list}`
     );
   } catch {
     return { ok: false, text: "📰 Haber bülteni üretilemedi (AI yanıtı alınamadı)." };

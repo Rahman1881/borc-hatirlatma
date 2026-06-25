@@ -7,7 +7,7 @@ import { Send, Clock, Check, FileText } from "lucide-react";
 type TgSchedule = {
   id: string;
   label: string;
-  type: "daily" | "weekly" | "news";
+  type: "daily" | "weekly" | "news" | "prices";
   time: string;
   weekday: number | null;
   enabled: boolean;
@@ -41,9 +41,30 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   );
 }
 
+function SendButton({
+  loading,
+  onClick,
+}: {
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      title="Telegram'a şimdi gönder"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+    >
+      <Send className="h-3 w-3" /> {loading ? "Gönderiliyor…" : "Gönder"}
+    </button>
+  );
+}
+
 function scheduleHint(s: TgSchedule): string {
   if (s.type === "weekly") return "Haftalık performans · Pazartesi";
   if (s.type === "news") return "Petrol & akaryakıt haberleri";
+  if (s.type === "prices") return "Rakip fiyatları · pahalıdan ucuza";
   return "Önceki günün satış raporu";
 }
 
@@ -51,6 +72,10 @@ export default function RaporlarPage() {
   const [status, setStatus] = useState<TgStatus | null>(null);
   const [schedules, setSchedules] = useState<TgSchedule[]>([]);
   const [vardiya, setVardiya] = useState(true);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ id: string; msg: string; ok: boolean } | null>(
+    null
+  );
 
   useEffect(() => {
     fetch("/api/ai/telegram")
@@ -76,6 +101,30 @@ export default function RaporlarPage() {
       });
     } catch {
       // sessizce geç
+    }
+  }
+
+  async function sendNow(id: string, report: string) {
+    setSendingId(id);
+    setFlash(null);
+    try {
+      const r = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", report }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setFlash({ id, msg: d.error || "Gönderilemedi.", ok: false });
+      } else if (d.sent === 0) {
+        setFlash({ id, msg: d.note || "Abone yok — kimseye gönderilmedi.", ok: false });
+      } else {
+        setFlash({ id, msg: `Gönderildi · ${d.sent} kişi`, ok: true });
+      }
+    } catch {
+      setFlash({ id, msg: "Sunucuya ulaşılamadı.", ok: false });
+    } finally {
+      setSendingId(null);
     }
   }
 
@@ -116,8 +165,23 @@ export default function RaporlarPage() {
                 <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
                   <FileText className="h-3 w-3" /> Olay tabanlı · günde ~3 kez
                 </p>
+                {flash?.id === "vardiya" && (
+                  <p
+                    className={`mt-1.5 text-[11px] font-medium ${
+                      flash.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+                    }`}
+                  >
+                    {flash.msg}
+                  </p>
+                )}
               </div>
-              <Toggle on={vardiya} onClick={toggleVardiya} />
+              <div className="flex shrink-0 items-center gap-2">
+                <SendButton
+                  loading={sendingId === "vardiya"}
+                  onClick={() => sendNow("vardiya", "vardiya")}
+                />
+                <Toggle on={vardiya} onClick={toggleVardiya} />
+              </div>
             </div>
 
             {schedules.map((s, i) => (
@@ -136,8 +200,23 @@ export default function RaporlarPage() {
                   <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
                     <Clock className="h-3 w-3" /> Her gün {s.time}
                   </p>
+                  {flash?.id === s.id && (
+                    <p
+                      className={`mt-1.5 text-[11px] font-medium ${
+                        flash.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+                      }`}
+                    >
+                      {flash.msg}
+                    </p>
+                  )}
                 </div>
-                <Toggle on={s.enabled} onClick={() => toggleSchedule(i)} />
+                <div className="flex shrink-0 items-center gap-2">
+                  <SendButton
+                    loading={sendingId === s.id}
+                    onClick={() => sendNow(s.id, s.type)}
+                  />
+                  <Toggle on={s.enabled} onClick={() => toggleSchedule(i)} />
+                </div>
               </div>
             ))}
           </div>
