@@ -120,6 +120,8 @@ type ScanHistoryEntry = {
 const RESULTS_KEY = "carkpetrol_musteri_results";
 const HISTORY_LIMIT = 30;
 const PAGE_SIZE = 6;
+// Aynı anda en fazla bu kadar işletme profili seçilebilir (performans için).
+const MAX_PROFILES = 3;
 
 const potentialTone: Record<Potential, "positive" | "warning" | "neutral"> = {
   Yüksek: "positive",
@@ -215,10 +217,6 @@ export default function MusteriBulucuPage() {
   }, []);
 
   const savedIds = useMemo(() => new Set(saved.map((s) => s.id)), [saved]);
-  const allProfiles = useMemo(
-    () => groups.flatMap((g) => g.profiles),
-    [groups]
-  );
 
   function persistResults(leads: Lead[], region: string, sc: boolean) {
     try {
@@ -249,18 +247,19 @@ export default function MusteriBulucuPage() {
   }
 
   function toggleProfile(p: string) {
-    setSelected((s) => (s.includes(p) ? s.filter((x) => x !== p) : [...s, p]));
+    if (selected.includes(p)) {
+      setSelected(selected.filter((x) => x !== p));
+      return;
+    }
+    if (selected.length >= MAX_PROFILES) {
+      setError(`En fazla ${MAX_PROFILES} işletme profili seçebilirsiniz.`);
+      return;
+    }
+    setError("");
+    setSelected([...selected, p]);
   }
   function toggleGroupOpen(g: string) {
     setOpenGroups((o) => ({ ...o, [g]: !o[g] }));
-  }
-  function toggleGroupSelect(g: ProfileGroup) {
-    const allOn = g.profiles.every((p) => selected.includes(p));
-    setSelected((s) =>
-      allOn
-        ? s.filter((x) => !g.profiles.includes(x))
-        : Array.from(new Set([...s, ...g.profiles]))
-    );
   }
 
   async function runScan() {
@@ -435,7 +434,7 @@ export default function MusteriBulucuPage() {
                 <div className="mt-4">
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-xs font-medium text-muted-foreground">
-                      İşletme Profilleri ({selected.length} seçili)
+                      İşletme Profilleri ({selected.length}/{MAX_PROFILES} seçili)
                     </p>
                     {selected.length > 0 && (
                       <button
@@ -453,7 +452,6 @@ export default function MusteriBulucuPage() {
                       const selCount = g.profiles.filter((p) =>
                         selected.includes(p)
                       ).length;
-                      const allOn = selCount === g.profiles.length;
                       return (
                         <div key={g.group} className="rounded-lg border bg-muted/30">
                           <div className="flex items-center justify-between px-3 py-2">
@@ -473,25 +471,24 @@ export default function MusteriBulucuPage() {
                                 </span>
                               )}
                             </button>
-                            <button
-                              onClick={() => toggleGroupSelect(g)}
-                              className="text-xs text-muted-foreground hover:text-foreground"
-                            >
-                              {allOn ? "Kaldır" : "Tümünü seç"}
-                            </button>
                           </div>
                           {open && (
                             <div className="flex flex-wrap gap-2 border-t px-3 py-3">
                               {g.profiles.map((p) => {
                                 const on = selected.includes(p);
+                                const blocked =
+                                  !on && selected.length >= MAX_PROFILES;
                                 return (
                                   <button
                                     key={p}
                                     onClick={() => toggleProfile(p)}
+                                    disabled={blocked}
                                     className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                                       on
                                         ? "border-primary bg-primary text-primary-foreground"
-                                        : "bg-card text-muted-foreground hover:text-foreground"
+                                        : blocked
+                                          ? "cursor-not-allowed bg-card text-muted-foreground/40"
+                                          : "bg-card text-muted-foreground hover:text-foreground"
                                     }`}
                                   >
                                     {p}
@@ -504,21 +501,6 @@ export default function MusteriBulucuPage() {
                       );
                     })}
                   </div>
-
-                  {allProfiles.length > 0 && (
-                    <button
-                      onClick={() =>
-                        setSelected((s) =>
-                          s.length === allProfiles.length ? [] : [...allProfiles]
-                        )
-                      }
-                      className="mt-2 text-xs font-medium text-primary hover:underline"
-                    >
-                      {selected.length === allProfiles.length
-                        ? "Tüm seçimi kaldır"
-                        : "Tüm profilleri seç"}
-                    </button>
-                  )}
                 </div>
               </div>
             </div>

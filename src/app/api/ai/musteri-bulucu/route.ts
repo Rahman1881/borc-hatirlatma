@@ -7,6 +7,26 @@ export const maxDuration = 60;
 // İşletme profilleri gruplara ayrılmış halde. Her profil -> Google Places metin sorgusu.
 const PROFILE_GROUPS: { group: string; profiles: Record<string, string> }[] = [
   {
+    group: "En Çok Kullanılanlar",
+    profiles: {
+      "Beyaz Eşya Yetkili Servisleri": "beyaz eşya yetkili servisi",
+      "Doğalgaz Teknik Servisleri": "doğalgaz kombi servisi",
+      "Ekmek Fırınları": "ekmek fırını",
+      "Elektrik ve Su Tesisatçıları": "su elektrik tesisatçısı",
+      "Güneş Enerji Sistemleri": "güneş enerjisi sistemleri firması",
+      "Halı Yıkamacıları": "halı yıkama fabrikası",
+      Haritacılar: "harita mühendislik bürosu",
+      "İlaçlama Şirketleri": "ilaçlama firması",
+      Kargocular: "kargo şubesi",
+      "Kömür Dağıtıcıları": "kömür bayi satış",
+      "Mermerci ve Doğal Taşçılar": "mermer doğaltaş firması",
+      Pazarcılar: "halk pazarı",
+      "Sürücü Kursları": "sürücü kursu",
+      "Toptan Gıdacılar": "toptan gıda deposu",
+      "Yapı Denetimciler": "yapı denetim firması",
+    },
+  },
+  {
     group: "Nakliye, Lojistik & Filo",
     profiles: {
       "Nakliye & Lojistik": "nakliye lojistik firması",
