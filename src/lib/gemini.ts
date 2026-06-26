@@ -168,3 +168,73 @@ export async function askGeminiJson<T>(
     throw new Error("Gemini geçerli JSON döndürmedi.");
   }
 }
+
+export type GroundingSource = { title: string; url: string };
+
+// Gemini'ye Google Arama (grounding) aracıyla güncel web'i kendisi araştırtır.
+// Düz metin + kaynak listesi döner. NOT: grounding ile responseMimeType=json
+// AYNI ANDA kullanılamaz; JSON gerekiyorsa metin içinden ayrıştırılmalıdır.
+export async function askGeminiGrounded(
+  systemPrompt: string,
+  userText: string
+): Promise<{ text: string; sources: GroundingSource[] }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error("Gemini API anahtarı tanımlı değil.");
+  }
+
+  const model = getGeminiModel();
+  const url = `${API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: "user", parts: [{ text: userText }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: {
+      temperature: 0.3,
+      // Grounding + düşünme tokenları bütçeyi paylaşır; cevabın kesilmemesi için yüksek.
+      maxOutputTokens: 8192,
+    },
+  };
+
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const err = await res.json();
+      detail = err?.error?.message || JSON.stringify(err);
+    } catch {
+      detail = await res.text();
+    }
+    throw new Error(`Gemini isteği başarısız (${res.status}): ${detail}`);
+  }
+
+  const data = await res.json();
+  const cand = data?.candidates?.[0];
+  const text: string = (cand?.content?.parts ?? [])
+    .map((p: { text?: string }) => p?.text || "")
+    .join("")
+    .trim();
+
+  if (!text) throw new Error("Gemini boş cevap döndürdü.");
+
+  // Grounding kaynaklarını (varsa) topla.
+  const chunks: { web?: { title?: string; uri?: string } }[] =
+    cand?.groundingMetadata?.groundingChunks ?? [];
+  const seen = new Set<string>();
+  const sources: GroundingSource[] = [];
+  for (const c of chunks) {
+    const title = c?.web?.title || "";
+    const uri = c?.web?.uri || "";
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    sources.push({ title, url: uri });
+  }
+
+  return { text, sources };
+}
