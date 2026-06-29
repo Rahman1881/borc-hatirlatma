@@ -251,6 +251,14 @@ function getVknTcknPair(row: UttsRow): { vkn: string; tckn: string } {
   return { vkn, tckn };
 }
 
+// Mükellef sorgusu sonuçlarını ve "E-Fatura'ya aktar" işaretlerini alıcının
+// vergi kimliğine (VKN/TCKN çifti) göre saklıyoruz. candidate.key birleştirme
+// modunda değiştiği için bu sabit anahtar; birleştir/ayır arasında korunur.
+function getRoutingKey(row: UttsRow): string {
+  const { vkn, tckn } = getVknTcknPair(row);
+  return `${vkn}|${tckn}`;
+}
+
 function getBuyerName(row: UttsRow) {
   return getFirstText(row, [
     "invoiceBuyerName",
@@ -745,8 +753,8 @@ export default function UttsBillingPage() {
   // tarafında da görünür (gönderilir) ama belge tipi E-Arşiv kalır.
   const checked = Object.keys(routings).length > 0;
   const isEfaturaSide = (candidate: InvoiceCandidate) =>
-    routings[candidate.key]?.isEInvoice === true ||
-    transferredKeys[candidate.key] === true;
+    routings[getRoutingKey(candidate.row)]?.isEInvoice === true ||
+    transferredKeys[getRoutingKey(candidate.row)] === true;
   const efaturaCandidates = invoiceCandidates.filter(isEfaturaSide);
   const earsivCandidates = invoiceCandidates.filter(
     (candidate) => !isEfaturaSide(candidate)
@@ -1004,13 +1012,20 @@ export default function UttsBillingPage() {
     }
 
     // Tüm adayları sorguluyoruz (tek numaralılar dahil) ki panelde herkesin
-    // E-Fatura/E-Arşiv durumu önceden görünsün.
-    const pairs = invoiceCandidates
-      .map((candidate) => ({
-        key: candidate.key,
-        ...getVknTcknPair(candidate.row),
-      }))
-      .filter((pair) => pair.vkn || pair.tckn);
+    // E-Fatura/E-Arşiv durumu önceden görünsün. Sonuçları vergi kimliğine
+    // (routingKey) göre saklıyoruz; aynı kişinin birden fazla adayı/birleşik
+    // adayı aynı sonucu paylaşır. Bu yüzden çiftleri tekilleştiriyoruz.
+    const pairMap = new Map<
+      string,
+      { key: string; vkn: string; tckn: string }
+    >();
+    for (const candidate of invoiceCandidates) {
+      const { vkn, tckn } = getVknTcknPair(candidate.row);
+      if (!vkn && !tckn) continue;
+      const key = getRoutingKey(candidate.row);
+      if (!pairMap.has(key)) pairMap.set(key, { key, vkn, tckn });
+    }
+    const pairs = Array.from(pairMap.values());
 
     if (pairs.length === 0) {
       toast.info("Sorgulanacak VKN/TCKN bilgisi olan kayıt yok");
@@ -1082,7 +1097,7 @@ export default function UttsBillingPage() {
       // taslak Uyumsoft'a TCKN ile ve doğru kişi yapısında gitsin.
       const tcknOverrides: Record<string, InvoiceBuyerOverride> = {};
       for (const candidate of invoiceCandidates) {
-        const routing = results[candidate.key];
+        const routing = results[getRoutingKey(candidate.row)];
         if (!routing || routing.via !== "tckn") continue;
 
         const fullName = getBuyerName(candidate.row).trim();
@@ -1611,7 +1626,8 @@ export default function UttsBillingPage() {
                     <TableCell>{candidate.taxNumber}</TableCell>
                     <TableCell className="min-w-32">
                       {(() => {
-                        const routing = routings[candidate.key];
+                        const routing =
+                          routings[getRoutingKey(candidate.row)];
                         if (!routing) {
                           return (
                             <span className="text-xs text-muted-foreground">
@@ -1677,18 +1693,22 @@ export default function UttsBillingPage() {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => transferToEfatura(candidate.key)}
+                              onClick={() =>
+                                transferToEfatura(getRoutingKey(candidate.row))
+                              }
                             >
                               E-Fatura&apos;ya aktar
                             </Button>
                           )}
                         {checked &&
                           activeTab === "efatura" &&
-                          transferredKeys[candidate.key] && (
+                          transferredKeys[getRoutingKey(candidate.row)] && (
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => transferToEarsiv(candidate.key)}
+                              onClick={() =>
+                                transferToEarsiv(getRoutingKey(candidate.row))
+                              }
                             >
                               E-Arşiv&apos;e geri al
                             </Button>
