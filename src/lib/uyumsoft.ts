@@ -22,6 +22,21 @@ export interface UyumsoftDraftResult {
   rawResponse?: string;
 }
 
+export interface UyumsoftEInvoiceUserResult {
+  ok: boolean;
+  registered: boolean;
+  message: string;
+  rawResponse?: string;
+}
+
+export interface EInvoiceRouting {
+  taxNumber: string;
+  scheme: "VKN" | "TCKN";
+  isEInvoice: boolean;
+  via: "vkn" | "tckn" | "none";
+  checked: boolean;
+}
+
 const DEFAULT_UYUMSOFT_SERVICE_URL =
   "https://efatura.uyumsoft.com.tr/Services/Integration";
 
@@ -64,6 +79,19 @@ function getResponseAttribute(xml: string, resultTag: string, attribute: string)
   return match?.[1] || "";
 }
 
+// Uyumsoft yanıtlarında bayrak alanları kimi metotta öznitelik (IsSucceded="true"),
+// kimi metotta alt eleman (<Value>true</Value>, ad alanı önekiyle gelebilir) olarak
+// dönüyor. Her iki biçimi de okuyup boş string ile "yok" durumunu ayırt ediyoruz.
+function readResultFlag(xml: string, resultTag: string, field: string) {
+  const attr = getResponseAttribute(xml, resultTag, field);
+  if (attr) return attr.trim();
+
+  const element = xml.match(
+    new RegExp(`<(?:\\w+:)?${field}\\b[^>]*>([\\s\\S]*?)</(?:\\w+:)?${field}>`, "i")
+  );
+  return element?.[1]?.trim() || "";
+}
+
 function getDraftIdentities(xml: string) {
   return Array.from(xml.matchAll(/<[^>]*Value\b([^>]*)\/?>/gi)).map((match) => {
     const attrs = match[1] || "";
@@ -99,6 +127,30 @@ function buildSaveAsDraftEnvelope(
 ${invoiceInfoXml}
       </invoices>
     </SaveAsDraft>
+  </s:Body>
+</s:Envelope>`;
+}
+
+function buildIsEInvoiceUserEnvelope(
+  username: string,
+  password: string,
+  vknTckn: string
+) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:u="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+  <s:Header>
+    <o:Security s:mustUnderstand="1" xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+      <o:UsernameToken u:Id="UsernameToken-1">
+        <o:Username>${escapeXml(username)}</o:Username>
+        <o:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">${escapeXml(password)}</o:Password>
+      </o:UsernameToken>
+    </o:Security>
+  </s:Header>
+  <s:Body>
+    <IsEInvoiceUser xmlns="http://tempuri.org/">
+      <vknTckn>${escapeXml(vknTckn)}</vknTckn>
+      <alias></alias>
+    </IsEInvoiceUser>
   </s:Body>
 </s:Envelope>`;
 }
@@ -237,5 +289,100 @@ export async function saveUyumsoftDrafts(
         : "Uyumsoft taslak kaydı doğrulanamadı"),
     drafts,
     rawResponse,
+  };
+}
+
+// Verilen VKN/TCKN'nin GİB e-fatura kayıtlı kullanıcısı olup olmadığını sorgular.
+// E-Fatura mı E-Arşiv mi kararının tek doğru kaynağı budur; profil seçimi değil.
+export async function checkEInvoiceUser(
+  settings: UyumsoftSettings,
+  vknTckn: string
+): Promise<UyumsoftEInvoiceUserResult> {
+  const number = (vknTckn || "").replace(/\D/g, "");
+  if (!/^\d{10,11}$/.test(number)) {
+    return { ok: false, registered: false, message: "Geçersiz VKN/TCKN" };
+  }
+
+  const username = settings.username.trim();
+  const password = settings.password;
+  if (!username || !password) {
+    return {
+      ok: false,
+      registered: false,
+      message: "Uyumsoft web servis kullanıcı adı ve şifre bilgisi gerekli",
+    };
+  }
+
+  const { ok, status, rawResponse } = await sendSoapRequest(
+    settings,
+    "http://tempuri.org/IIntegration/IsEInvoiceUser",
+    buildIsEInvoiceUserEnvelope(username, password, number)
+  );
+  const fault = getSoapFault(rawResponse);
+
+  if (!ok || fault) {
+    return {
+      ok: false,
+      registered: false,
+      message: fault || `Uyumsoft mükellef sorgusu başarısız oldu (${status})`,
+      rawResponse,
+    };
+  }
+
+  const succeeded =
+    readResultFlag(rawResponse, "IsEInvoiceUserResult", "IsSucceded").toLowerCase() ===
+    "true";
+  const valueRaw = readResultFlag(rawResponse, "IsEInvoiceUserResult", "Value");
+  const message = readResultFlag(rawResponse, "IsEInvoiceUserResult", "Message");
+
+  // Value alanı varsa onu kullan; yanıt sadece IsSucceded ile dönüyorsa ona düş.
+  const registered = succeeded && (valueRaw ? valueRaw.toLowerCase() === "true" : true);
+
+  return { ok: succeeded, registered, message, rawResponse };
+}
+
+// VKN ve TCKN'nin ikisi de gelebildiği için sırayla sorgular:
+// önce VKN kayıtlı mı, değilse TCKN kayıtlı mı. Kayıtlı olan numarayla
+// E-Fatura, ikisi de değilse mevcut numarayla E-Arşiv yönlendirmesi döner.
+export async function resolveEInvoiceRouting(
+  settings: UyumsoftSettings,
+  pair: { vkn?: string; tckn?: string },
+  cache?: Map<string, UyumsoftEInvoiceUserResult>
+): Promise<EInvoiceRouting> {
+  const vkn = (pair.vkn || "").replace(/\D/g, "");
+  const tckn = (pair.tckn || "").replace(/\D/g, "");
+
+  const lookup = async (number: string) => {
+    if (cache?.has(number)) return cache.get(number)!;
+    const result = await checkEInvoiceUser(settings, number);
+    cache?.set(number, result);
+    return result;
+  };
+
+  let checked = false;
+
+  if (/^\d{10}$/.test(vkn)) {
+    const result = await lookup(vkn);
+    checked = checked || result.ok;
+    if (result.registered) {
+      return { taxNumber: vkn, scheme: "VKN", isEInvoice: true, via: "vkn", checked: true };
+    }
+  }
+
+  if (/^\d{11}$/.test(tckn)) {
+    const result = await lookup(tckn);
+    checked = checked || result.ok;
+    if (result.registered) {
+      return { taxNumber: tckn, scheme: "TCKN", isEInvoice: true, via: "tckn", checked: true };
+    }
+  }
+
+  const fallback = vkn || tckn;
+  return {
+    taxNumber: fallback,
+    scheme: fallback.length === 11 ? "TCKN" : "VKN",
+    isEInvoice: false,
+    via: "none",
+    checked,
   };
 }

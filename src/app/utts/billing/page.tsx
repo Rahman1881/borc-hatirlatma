@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import type { EInvoiceRouting } from "@/lib/uyumsoft";
 
 type UttsRow = Record<string, unknown>;
 
@@ -225,6 +226,29 @@ function getSourceTaxNumber(row: UttsRow) {
     "customerTaxNumber",
     "customerIdentityNumber",
   ]).replace(/\D/g, "");
+}
+
+// Bir adayda VKN (10 hane) ve TCKN (11 hane) ayrı alanlarda gelebilir; ikisini
+// de toplayıp mükellef sorgusunda önce VKN sonra TCKN denenebilsin diye ayırır.
+function getVknTcknPair(row: UttsRow): { vkn: string; tckn: string } {
+  const keys = [
+    "invoiceTaxNumber",
+    "taxInfoNumber",
+    "identificationNumberForInvoice",
+    "vknTckn",
+    "taxNumber",
+    "identityNumber",
+    "customerTaxNumber",
+    "customerIdentityNumber",
+  ];
+  let vkn = "";
+  let tckn = "";
+  for (const key of keys) {
+    const value = getText(row, key).replace(/\D/g, "");
+    if (!vkn && value.length === 10) vkn = value;
+    if (!tckn && value.length === 11) tckn = value;
+  }
+  return { vkn, tckn };
 }
 
 function getBuyerName(row: UttsRow) {
@@ -618,6 +642,8 @@ export default function UttsBillingPage() {
   const [fetching, setFetching] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [drafting, setDrafting] = useState(false);
+  const [checkingUsers, setCheckingUsers] = useState(false);
+  const [routings, setRoutings] = useState<Record<string, EInvoiceRouting>>({});
   const [savingOverride, setSavingOverride] = useState(false);
   const [rows, setRows] = useState<UttsRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, InvoiceBuyerOverride>>({});
@@ -854,6 +880,7 @@ export default function UttsBillingPage() {
         filters.endActivationDate
       );
       setRows(filteredRows);
+      setRoutings({});
       setPage(1);
       toast.success(`${filteredRows.length} kayıt fatura adayına hazırlandı`);
     } catch {
@@ -908,6 +935,60 @@ export default function UttsBillingPage() {
       toast.error("Uyumsoft Excel dosyası indirilirken hata oluştu");
     } finally {
       setExporting(false);
+    }
+  };
+
+  const checkEInvoiceUsers = async () => {
+    if (invoiceCandidates.length === 0) {
+      toast.error("Mükellef kontrolü için fatura adayı yok");
+      return;
+    }
+    if (!uyumsoftConnected) {
+      toast.error("Önce Uyumsoft bağlantı testinin başarılı olması gerekiyor");
+      return;
+    }
+
+    const pairs = invoiceCandidates
+      .map((candidate) => ({
+        key: candidate.key,
+        ...getVknTcknPair(candidate.row),
+      }))
+      .filter((pair) => pair.vkn || pair.tckn);
+
+    if (pairs.length === 0) {
+      toast.error("Sorgulanacak geçerli VKN/TCKN bulunamadı");
+      return;
+    }
+
+    setCheckingUsers(true);
+    try {
+      const res = await fetch("/api/uyumsoft/check-einvoice-users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairs }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Mükellef sorgusu başarısız oldu");
+        return;
+      }
+
+      const results = (data.results || {}) as Record<string, EInvoiceRouting>;
+      setRoutings((prev) => ({ ...prev, ...results }));
+
+      const eInvoiceCount = Object.values(results).filter(
+        (routing) => routing.isEInvoice
+      ).length;
+      toast.success(
+        `${Object.keys(results).length} alıcı sorgulandı: ${eInvoiceCount} E-Fatura, ${
+          Object.keys(results).length - eInvoiceCount
+        } E-Arşiv`
+      );
+    } catch {
+      toast.error("Mükellef sorgusu sırasında hata oluştu");
+    } finally {
+      setCheckingUsers(false);
     }
   };
 
@@ -1194,6 +1275,20 @@ export default function UttsBillingPage() {
                 variant="outline"
                 size="sm"
                 disabled={
+                  checkingUsers ||
+                  invoiceCandidates.length === 0 ||
+                  !uyumsoftConnected
+                }
+                onClick={checkEInvoiceUsers}
+              >
+                {checkingUsers
+                  ? "Mükellef Sorgulanıyor..."
+                  : "E-Fatura Mükellef Kontrolü"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
                   drafting ||
                   readyCandidates.length === 0 ||
                   !uyumsoftConnected
@@ -1213,6 +1308,7 @@ export default function UttsBillingPage() {
                   <TableHead>Alıcı</TableHead>
                   <TableHead>Tip</TableHead>
                   <TableHead>VKN/TCKN</TableHead>
+                  <TableHead>E-Belge</TableHead>
                   <TableHead>Plaka</TableHead>
                   <TableHead>Mal/Hizmet</TableHead>
                   <TableHead className="text-right">Birim Fiyat</TableHead>
@@ -1260,6 +1356,30 @@ export default function UttsBillingPage() {
                       )}
                     </TableCell>
                     <TableCell>{candidate.taxNumber}</TableCell>
+                    <TableCell className="min-w-32">
+                      {(() => {
+                        const routing = routings[candidate.key];
+                        if (!routing) {
+                          return (
+                            <span className="text-xs text-muted-foreground">
+                              Sorgulanmadı
+                            </span>
+                          );
+                        }
+                        if (routing.isEInvoice) {
+                          return (
+                            <Badge className="border-green-300 bg-green-100 text-green-900">
+                              E-Fatura ({routing.scheme})
+                            </Badge>
+                          );
+                        }
+                        return (
+                          <Badge className="border-amber-300 bg-amber-100 text-amber-900">
+                            E-Arşiv
+                          </Badge>
+                        );
+                      })()}
+                    </TableCell>
                     <TableCell>{candidate.plate}</TableCell>
                     <TableCell>
                       <div>{candidate.productName}</div>
@@ -1304,7 +1424,7 @@ export default function UttsBillingPage() {
                 {invoiceCandidates.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={10}
+                      colSpan={11}
                       className="py-8 text-center text-muted-foreground"
                     >
                       Fatura adayı hazırlamak için UTTS verisi çekin.

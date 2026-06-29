@@ -4,7 +4,9 @@ import getDb from "@/lib/db";
 import {
   escapeXml,
   getDefaultUyumsoftServiceUrl,
+  resolveEInvoiceRouting,
   saveUyumsoftDrafts,
+  type UyumsoftEInvoiceUserResult,
   type UyumsoftSettings,
 } from "@/lib/uyumsoft";
 
@@ -82,17 +84,32 @@ function getFirstNumber(row: UttsRow, keys: string[]) {
   return 0;
 }
 
+const TAX_NUMBER_KEYS = [
+  "invoiceTaxNumber",
+  "taxInfoNumber",
+  "identificationNumberForInvoice",
+  "vknTckn",
+  "taxNumber",
+  "identityNumber",
+  "customerTaxNumber",
+  "customerIdentityNumber",
+];
+
 function getTaxNumber(row: UttsRow) {
-  return getFirstText(row, [
-    "invoiceTaxNumber",
-    "taxInfoNumber",
-    "identificationNumberForInvoice",
-    "vknTckn",
-    "taxNumber",
-    "identityNumber",
-    "customerTaxNumber",
-    "customerIdentityNumber",
-  ]).replace(/\D/g, "");
+  return getFirstText(row, TAX_NUMBER_KEYS).replace(/\D/g, "");
+}
+
+// Bir satırda VKN (10 hane) ve TCKN (11 hane) ayrı alanlarda gelebiliyor.
+// Tüm aday alanları tarayıp uzunluğa göre sınıflandırır.
+function getVknTcknPair(row: UttsRow): { vkn: string; tckn: string } {
+  let vkn = "";
+  let tckn = "";
+  for (const key of TAX_NUMBER_KEYS) {
+    const value = getText(row, key).replace(/\D/g, "");
+    if (!vkn && value.length === 10) vkn = value;
+    if (!tckn && value.length === 11) tckn = value;
+  }
+  return { vkn, tckn };
 }
 
 function getBuyerName(row: UttsRow) {
@@ -402,18 +419,20 @@ function buildInvoiceInfoXml(input: {
   group: UttsRow[];
   groupIndex: number;
   invoiceDate: string;
-  profile: string;
+  profileId: string;
+  recipientTaxNumber: string;
   settings: UyumsoftSettings;
 }) {
   const buyerRow = input.group[0];
   const buyer = splitBuyerName(buyerRow);
-  const buyerTaxNumber = getTaxNumber(buyerRow);
+  const buyerTaxNumber =
+    input.recipientTaxNumber.replace(/\D/g, "") || getTaxNumber(buyerRow);
   const sellerTaxNumber = (input.settings.vknTckn || "").replace(/\D/g, "");
   const sellerName = getSellerName(input.settings);
   const { issueDate, issueTime } = getIssueDateTime(input.invoiceDate);
   const uuid = randomUUID();
   const localDocumentId = `UTTS-${issueDate.replace(/\D/g, "")}-${input.groupIndex + 1}`;
-  const profileId = getProfileId(input.profile);
+  const profileId = getProfileId(input.profileId);
   const lineTotal = input.group.reduce((sum, row) => sum + getUnitPrice(row), 0);
   const taxTotal = lineTotal * (DEFAULT_VAT_RATE / 100);
   const payableTotal = lineTotal + taxTotal;
@@ -546,16 +565,44 @@ export async function POST(req: NextRequest) {
     }
 
     const groups = buildGroups(rows, mergeByBuyer);
+
+    // Kullanıcının e-fatura tercihi (TEMEL/TICARI); kayıtlı olmayan alıcılar
+    // mecburen E-Arşiv'e yönlendirilir.
+    const eInvoiceProfile = profile === "TEMELFATURA" ? "TEMELFATURA" : "TICARIFATURA";
+    const routingCache = new Map<string, UyumsoftEInvoiceUserResult>();
+
+    // Mükellef sorguları sırayla yapılırsa çok kayıtta yavaş; sınırlı
+    // eşzamanlılıkla paralel çözüp sonra XML'i sırasıyla kuruyoruz.
+    const routings = new Array<Awaited<ReturnType<typeof resolveEInvoiceRouting>>>(
+      groups.length
+    );
+    const CONCURRENCY = 10;
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, groups.length) }, async () => {
+        while (cursor < groups.length) {
+          const index = cursor++;
+          routings[index] = await resolveEInvoiceRouting(
+            settings,
+            getVknTcknPair(groups[index][0]),
+            routingCache
+          );
+        }
+      })
+    );
+
     const invoiceInfoXml = groups
-      .map((group, groupIndex) =>
-        buildInvoiceInfoXml({
+      .map((group, groupIndex) => {
+        const routing = routings[groupIndex];
+        return buildInvoiceInfoXml({
           group,
           groupIndex,
           invoiceDate,
-          profile,
+          profileId: routing.isEInvoice ? eInvoiceProfile : "EARSIVFATURA",
+          recipientTaxNumber: routing.taxNumber,
           settings,
-        })
-      )
+        });
+      })
       .join("\n");
 
     if (dryRun) {
