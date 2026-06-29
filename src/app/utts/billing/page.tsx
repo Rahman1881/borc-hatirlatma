@@ -981,13 +981,45 @@ export default function UttsBillingPage() {
       const results = (data.results || {}) as Record<string, EInvoiceRouting>;
       setRoutings((prev) => ({ ...prev, ...results }));
 
+      // E-faturası VKN yerine TCKN üzerinde olan tüzel kişiler (via: "tckn"):
+      // satırı TCKN'e çevirip gerçek kişi (ad/soyad) olarak işaretliyoruz ki
+      // taslak Uyumsoft'a TCKN ile ve doğru kişi yapısında gitsin.
+      const tcknOverrides: Record<string, InvoiceBuyerOverride> = {};
+      for (const candidate of invoiceCandidates) {
+        const routing = results[candidate.key];
+        if (!routing || routing.via !== "tckn") continue;
+
+        const fullName = getBuyerName(candidate.row).trim();
+        const parts = fullName.split(/\s+/).filter(Boolean);
+        const hasSurname = parts.length >= 2;
+        const sourceTaxNumber = getSourceTaxNumber(candidate.row);
+
+        tcknOverrides[sourceTaxNumber] = {
+          sourceTaxNumber,
+          taxNumber: routing.taxNumber,
+          buyerType: "person",
+          buyerName: hasSurname ? parts.slice(0, -1).join(" ") : fullName,
+          buyerSurname: hasSurname ? parts[parts.length - 1] : "",
+          taxOffice: getTaxOffice(candidate.row),
+          city: getCity(candidate.row),
+          district: getDistrict(candidate.row),
+          address: getAddress(candidate.row),
+          email: getEmail(candidate.row),
+          phone: getPhone(candidate.row),
+        };
+      }
+      if (Object.keys(tcknOverrides).length > 0) {
+        setOverrides((prev) => ({ ...prev, ...tcknOverrides }));
+      }
+
       const eInvoiceCount = Object.values(results).filter(
         (routing) => routing.isEInvoice
       ).length;
+      const tcknCount = Object.keys(tcknOverrides).length;
       toast.success(
         `${Object.keys(results).length} alıcı sorgulandı: ${eInvoiceCount} E-Fatura, ${
           Object.keys(results).length - eInvoiceCount
-        } E-Arşiv`
+        } E-Arşiv${tcknCount > 0 ? ` (${tcknCount} tüzel kişi TCKN'e çevrildi)` : ""}`
       );
     } catch {
       toast.error("Mükellef sorgusu sırasında hata oluştu");
