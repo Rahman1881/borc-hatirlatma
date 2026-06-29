@@ -643,6 +643,10 @@ export default function UttsBillingPage() {
   const [exporting, setExporting] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [checkingUsers, setCheckingUsers] = useState(false);
+  const [checkProgress, setCheckProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [routings, setRoutings] = useState<Record<string, EInvoiceRouting>>({});
   const [savingOverride, setSavingOverride] = useState(false);
   const [rows, setRows] = useState<UttsRow[]>([]);
@@ -948,38 +952,79 @@ export default function UttsBillingPage() {
       return;
     }
 
-    // Yalnızca hem VKN hem TCKN'si olan kayıtları sorguluyoruz. Tek numaralı
-    // kayıtlarda seçim yok; Uyumsoft taslakta E-Fatura/E-Arşiv'i kendi belirliyor.
+    // Tüm adayları sorguluyoruz (tek numaralılar dahil) ki panelde herkesin
+    // E-Fatura/E-Arşiv durumu önceden görünsün.
     const pairs = invoiceCandidates
       .map((candidate) => ({
         key: candidate.key,
         ...getVknTcknPair(candidate.row),
       }))
-      .filter((pair) => pair.vkn && pair.tckn);
+      .filter((pair) => pair.vkn || pair.tckn);
 
     if (pairs.length === 0) {
-      toast.info(
-        "Hem VKN hem TCKN'si olan kayıt yok; tek numaralılar Uyumsoft'ta otomatik yönlenir"
-      );
+      toast.info("Sorgulanacak VKN/TCKN bilgisi olan kayıt yok");
       return;
     }
 
     setCheckingUsers(true);
+    setCheckProgress({ done: 0, total: pairs.length });
+    const results: Record<string, EInvoiceRouting> = {};
     try {
+      // Sonuçlar NDJSON akışı olarak geliyor: her kayıt çözüldükçe ilerlemeyi
+      // ve tabloyu canlı güncelliyoruz, böylece sayaç anlık olarak artıyor.
       const res = await fetch("/api/uyumsoft/check-einvoice-users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pairs }),
       });
-      const data = await res.json();
 
-      if (!res.ok || data.error) {
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         toast.error(data.error || "Mükellef sorgusu başarısız oldu");
         return;
       }
 
-      const results = (data.results || {}) as Record<string, EInvoiceRouting>;
-      setRoutings((prev) => ({ ...prev, ...results }));
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = 0;
+      let streamError = "";
+
+      const handleLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        const msg = JSON.parse(trimmed) as {
+          type: string;
+          key?: string;
+          routing?: EInvoiceRouting;
+          total?: number;
+          error?: string;
+        };
+        if (msg.type === "result" && msg.key && msg.routing) {
+          const routing = msg.routing;
+          results[msg.key] = routing;
+          setRoutings((prev) => ({ ...prev, [msg.key as string]: routing }));
+          done += 1;
+          setCheckProgress({ done, total: pairs.length });
+        } else if (msg.type === "error") {
+          streamError = msg.error || "Mükellef sorgusu sırasında hata oluştu";
+        }
+      };
+
+      for (;;) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) handleLine(line);
+      }
+      if (buffer) handleLine(buffer);
+
+      if (streamError) {
+        toast.error(streamError);
+        return;
+      }
 
       // E-faturası VKN yerine TCKN üzerinde olan tüzel kişiler (via: "tckn"):
       // satırı TCKN'e çevirip gerçek kişi (ad/soyad) olarak işaretliyoruz ki
@@ -1025,6 +1070,7 @@ export default function UttsBillingPage() {
       toast.error("Mükellef sorgusu sırasında hata oluştu");
     } finally {
       setCheckingUsers(false);
+      setCheckProgress(null);
     }
   };
 
@@ -1085,6 +1131,43 @@ export default function UttsBillingPage() {
 
   return (
     <div className="space-y-6">
+      {checkingUsers && checkProgress && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-lg border bg-background p-6 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+              <h3 className="text-lg font-semibold">
+                Mükellef kontrolü yapılıyor
+              </h3>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Alıcıların E-Fatura / E-Arşiv durumu Uyumsoft&apos;tan
+              sorgulanıyor. Lütfen bekleyin.
+            </p>
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-foreground transition-all duration-300"
+                style={{
+                  width: `${Math.round(
+                    (checkProgress.done / Math.max(checkProgress.total, 1)) * 100
+                  )}%`,
+                }}
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">
+                {checkProgress.done} / {checkProgress.total} alıcı
+              </span>
+              <span className="font-medium">
+                %
+                {Math.round(
+                  (checkProgress.done / Math.max(checkProgress.total, 1)) * 100
+                )}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Faturalandırma</h2>
@@ -1318,7 +1401,9 @@ export default function UttsBillingPage() {
                 onClick={checkEInvoiceUsers}
               >
                 {checkingUsers
-                  ? "Mükellef Sorgulanıyor..."
+                  ? checkProgress
+                    ? `Sorgulanıyor... ${checkProgress.done}/${checkProgress.total}`
+                    : "Mükellef Sorgulanıyor..."
                   : "E-Fatura Mükellef Kontrolü"}
               </Button>
               <Button
@@ -1396,14 +1481,6 @@ export default function UttsBillingPage() {
                       {(() => {
                         const routing = routings[candidate.key];
                         if (!routing) {
-                          const pair = getVknTcknPair(candidate.row);
-                          if (!(pair.vkn && pair.tckn)) {
-                            return (
-                              <span className="text-xs text-muted-foreground">
-                                Tek no (otomatik)
-                              </span>
-                            );
-                          }
                           return (
                             <span className="text-xs text-muted-foreground">
                               Sorgulanmadı

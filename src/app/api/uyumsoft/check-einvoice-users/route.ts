@@ -66,28 +66,75 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const cache = new Map<string, UyumsoftEInvoiceUserResult>();
-    const results: Record<string, EInvoiceRouting> = {};
     const validPairs = pairs.filter((pair) => pair.key);
+    const cache = new Map<string, UyumsoftEInvoiceUserResult>();
+    const encoder = new TextEncoder();
 
-    // Sorgular sırayla yapılırsa çok kayıtta dakikalara çıkıyor; sınırlı
-    // eşzamanlılıkla paralel çalıştırıyoruz. Cache aynı numarayı tekrar sormayı önler.
-    const CONCURRENCY = 10;
-    let cursor = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, validPairs.length) }, async () => {
-        while (cursor < validPairs.length) {
-          const pair = validPairs[cursor++];
-          results[pair.key] = await resolveEInvoiceRouting(
-            settings,
-            { vkn: pair.vkn, tckn: pair.tckn },
-            cache
+    // Sonuçları NDJSON akışı olarak gönderiyoruz: her kayıt çözüldükçe bir
+    // satır yazıyoruz. Böylece istemci ilerlemeyi gerçek zamanlı gösterebilir.
+    // Sorgular sınırlı eşzamanlılıkla paralel; cache aynı numarayı tekrar sormaz.
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const write = (obj: unknown) =>
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+
+        try {
+          write({ type: "start", total: validPairs.length });
+
+          const CONCURRENCY = 10;
+          let cursor = 0;
+          await Promise.all(
+            Array.from(
+              { length: Math.min(CONCURRENCY, validPairs.length) },
+              async () => {
+                while (cursor < validPairs.length) {
+                  const pair = validPairs[cursor++];
+                  let routing: EInvoiceRouting;
+                  try {
+                    routing = await resolveEInvoiceRouting(
+                      settings,
+                      { vkn: pair.vkn, tckn: pair.tckn },
+                      cache
+                    );
+                  } catch {
+                    // Tek bir kayıttaki hata tüm akışı durdurmasın; güvenli
+                    // tarafta kalıp E-Arşiv kabul ediyoruz.
+                    routing = {
+                      taxNumber: (pair.vkn || pair.tckn || "").replace(
+                        /\D/g,
+                        ""
+                      ),
+                      scheme: pair.vkn ? "VKN" : "TCKN",
+                      isEInvoice: false,
+                      via: "none",
+                      checked: false,
+                    };
+                  }
+                  write({ type: "result", key: pair.key, routing });
+                }
+              }
+            )
           );
-        }
-      })
-    );
 
-    return NextResponse.json({ success: true, results });
+          write({ type: "done" });
+        } catch (err: unknown) {
+          const message =
+            err instanceof Error
+              ? err.message
+              : "Mükellef sorgusu sırasında hata oluştu";
+          write({ type: "error", error: message });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
   } catch (err: unknown) {
     const message =
       err instanceof Error
