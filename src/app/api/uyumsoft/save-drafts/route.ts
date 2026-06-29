@@ -571,20 +571,28 @@ export async function POST(req: NextRequest) {
     const eInvoiceProfile = profile === "TEMELFATURA" ? "TEMELFATURA" : "TICARIFATURA";
     const routingCache = new Map<string, UyumsoftEInvoiceUserResult>();
 
-    // Mükellef sorguları sırayla yapılırsa çok kayıtta yavaş; sınırlı
-    // eşzamanlılıkla paralel çözüp sonra XML'i sırasıyla kuruyoruz.
-    const routings = new Array<Awaited<ReturnType<typeof resolveEInvoiceRouting>>>(
-      groups.length
-    );
+    // Yalnızca hem VKN hem TCKN'si olan gruplar için sorgu yapıyoruz; bu
+    // kayıtlarda faturaya hangi numarayı yazacağımıza biz karar veririz.
+    // Tek numaralı kayıtlarda seçim yok; numarayı gönderir, Uyumsoft'un
+    // E-Fatura/E-Arşiv'i otomatik belirlemesine bırakırız.
+    const groupPairs = groups.map((group) => getVknTcknPair(group[0]));
+    const dualIndexes = groups
+      .map((_, index) => index)
+      .filter((index) => groupPairs[index].vkn && groupPairs[index].tckn);
+
+    // Sorgular sırayla yapılırsa yavaş; sınırlı eşzamanlılıkla paralel çözüyoruz.
+    const routings = new Array<
+      Awaited<ReturnType<typeof resolveEInvoiceRouting>> | undefined
+    >(groups.length);
     const CONCURRENCY = 10;
     let cursor = 0;
     await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, groups.length) }, async () => {
-        while (cursor < groups.length) {
-          const index = cursor++;
+      Array.from({ length: Math.min(CONCURRENCY, dualIndexes.length) }, async () => {
+        while (cursor < dualIndexes.length) {
+          const index = dualIndexes[cursor++];
           routings[index] = await resolveEInvoiceRouting(
             settings,
-            getVknTcknPair(groups[index][0]),
+            groupPairs[index],
             routingCache
           );
         }
@@ -594,12 +602,19 @@ export async function POST(req: NextRequest) {
     const invoiceInfoXml = groups
       .map((group, groupIndex) => {
         const routing = routings[groupIndex];
+        const pair = groupPairs[groupIndex];
         return buildInvoiceInfoXml({
           group,
           groupIndex,
           invoiceDate,
-          profileId: routing.isEInvoice ? eInvoiceProfile : "EARSIVFATURA",
-          recipientTaxNumber: routing.taxNumber,
+          profileId: routing
+            ? routing.isEInvoice
+              ? eInvoiceProfile
+              : "EARSIVFATURA"
+            : profile,
+          recipientTaxNumber: routing
+            ? routing.taxNumber
+            : pair.vkn || pair.tckn || getTaxNumber(group[0]),
           settings,
         });
       })

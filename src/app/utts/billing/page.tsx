@@ -948,15 +948,19 @@ export default function UttsBillingPage() {
       return;
     }
 
+    // Yalnızca hem VKN hem TCKN'si olan kayıtları sorguluyoruz. Tek numaralı
+    // kayıtlarda seçim yok; Uyumsoft taslakta E-Fatura/E-Arşiv'i kendi belirliyor.
     const pairs = invoiceCandidates
       .map((candidate) => ({
         key: candidate.key,
         ...getVknTcknPair(candidate.row),
       }))
-      .filter((pair) => pair.vkn || pair.tckn);
+      .filter((pair) => pair.vkn && pair.tckn);
 
     if (pairs.length === 0) {
-      toast.error("Sorgulanacak geçerli VKN/TCKN bulunamadı");
+      toast.info(
+        "Hem VKN hem TCKN'si olan kayıt yok; tek numaralılar Uyumsoft'ta otomatik yönlenir"
+      );
       return;
     }
 
@@ -1360,6 +1364,14 @@ export default function UttsBillingPage() {
                       {(() => {
                         const routing = routings[candidate.key];
                         if (!routing) {
+                          const pair = getVknTcknPair(candidate.row);
+                          if (!(pair.vkn && pair.tckn)) {
+                            return (
+                              <span className="text-xs text-muted-foreground">
+                                Tek no (otomatik)
+                              </span>
+                            );
+                          }
                           return (
                             <span className="text-xs text-muted-foreground">
                               Sorgulanmadı
