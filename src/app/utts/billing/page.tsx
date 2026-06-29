@@ -648,6 +648,12 @@ export default function UttsBillingPage() {
     total: number;
   } | null>(null);
   const [routings, setRoutings] = useState<Record<string, EInvoiceRouting>>({});
+  const [activeTab, setActiveTab] = useState<"efatura" | "earsiv">("efatura");
+  // E-Arşiv olup da kullanıcının elle "E-Fatura'ya aktar" dediği adayların
+  // anahtarları; belge tipi yine E-Arşiv kalır, sadece gönderim listesine girer.
+  const [transferredKeys, setTransferredKeys] = useState<
+    Record<string, boolean>
+  >({});
   const [savingOverride, setSavingOverride] = useState(false);
   const [rows, setRows] = useState<UttsRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, InvoiceBuyerOverride>>({});
@@ -733,8 +739,33 @@ export default function UttsBillingPage() {
     (sum, candidate) => sum + candidate.unitPrice,
     0
   );
-  const pageCount = totalPages(invoiceCandidates.length);
-  const pagedCandidates = invoiceCandidates.slice(
+
+  // Mükellef kontrolü yapıldıysa (en az bir sonuç varsa) adayları E-Fatura ve
+  // E-Arşiv sekmelerine ayırıyoruz. Aktarılan E-Arşiv kayıtları E-Fatura
+  // tarafında da görünür (gönderilir) ama belge tipi E-Arşiv kalır.
+  const checked = Object.keys(routings).length > 0;
+  const isEfaturaSide = (candidate: InvoiceCandidate) =>
+    routings[candidate.key]?.isEInvoice === true ||
+    transferredKeys[candidate.key] === true;
+  const efaturaCandidates = invoiceCandidates.filter(isEfaturaSide);
+  const earsivCandidates = invoiceCandidates.filter(
+    (candidate) => !isEfaturaSide(candidate)
+  );
+  const displayedCandidates = checked
+    ? activeTab === "efatura"
+      ? efaturaCandidates
+      : earsivCandidates
+    : invoiceCandidates;
+
+  // Taslak olarak gönderilecekler: kontrol yapıldıysa yalnızca E-Fatura sekmesi
+  // (E-Fatura mükellefleri + aktarılan E-Arşiv'liler), aksi halde tüm adaylar.
+  const sendableCandidates = checked ? efaturaCandidates : invoiceCandidates;
+  const sendableReadyCandidates = sendableCandidates.filter(
+    (candidate) => candidate.issues.length === 0
+  );
+
+  const pageCount = totalPages(displayedCandidates.length);
+  const pagedCandidates = displayedCandidates.slice(
     (page - 1) * PAGE_SIZE,
     page * PAGE_SIZE
   );
@@ -885,6 +916,8 @@ export default function UttsBillingPage() {
       );
       setRows(filteredRows);
       setRoutings({});
+      setTransferredKeys({});
+      setActiveTab("efatura");
       setPage(1);
       toast.success(`${filteredRows.length} kayıt fatura adayına hazırlandı`);
     } catch {
@@ -894,11 +927,27 @@ export default function UttsBillingPage() {
     }
   };
 
-  const exportUyumsoftExcel = async () => {
-    if (invoiceCandidates.length === 0) {
+  const exportUyumsoftExcel = async (
+    scope: "all" | "efatura" | "earsiv" = "all"
+  ) => {
+    const scopedCandidates =
+      scope === "efatura"
+        ? efaturaCandidates
+        : scope === "earsiv"
+        ? earsivCandidates
+        : invoiceCandidates;
+
+    if (scopedCandidates.length === 0) {
       toast.error("Excel oluşturmak için fatura adayı yok");
       return;
     }
+
+    const scopeLabel =
+      scope === "efatura"
+        ? "e-fatura"
+        : scope === "earsiv"
+        ? "e-arsiv"
+        : "tumu";
 
     setExporting(true);
     try {
@@ -906,7 +955,7 @@ export default function UttsBillingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rows: invoiceCandidates.flatMap((candidate) => candidate.exportRows),
+          rows: scopedCandidates.flatMap((candidate) => candidate.exportRows),
           invoiceDate: filters.invoiceDate,
           profile: filters.invoiceProfile,
           mergeByBuyer,
@@ -923,15 +972,17 @@ export default function UttsBillingPage() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `uyumsoft-fatura-${filters.invoiceDate}.xlsx`;
+      link.download = `uyumsoft-fatura-${scopeLabel}-${filters.invoiceDate}.xlsx`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      if (issueCount > 0) {
+      const scopeIssueCount = scopedCandidates.reduce(
+        (sum, candidate) => sum + candidate.issues.length,
+        0
+      );
+      if (scopeIssueCount > 0) {
         toast.warning("Excel indirildi; eksik alanlar boş bırakıldı");
-      } else if (mergeByBuyer) {
-        toast.success("Birleştirilmiş Uyumsoft Excel dosyası indirildi");
       } else {
         toast.success("Uyumsoft Excel dosyası indirildi");
       }
@@ -1074,8 +1125,21 @@ export default function UttsBillingPage() {
     }
   };
 
+  const transferToEfatura = (key: string) => {
+    setTransferredKeys((prev) => ({ ...prev, [key]: true }));
+    toast.success("Aday E-Fatura sekmesine aktarıldı (belge tipi E-Arşiv kalır)");
+  };
+
+  const transferToEarsiv = (key: string) => {
+    setTransferredKeys((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
   const createUyumsoftDrafts = async () => {
-    if (readyCandidates.length === 0) {
+    if (sendableReadyCandidates.length === 0) {
       toast.error("Taslak oluşturmak için kontrolü geçen fatura adayı yok");
       return;
     }
@@ -1085,11 +1149,18 @@ export default function UttsBillingPage() {
       return;
     }
 
-    const blockedCount = invoiceCandidates.length - readyCandidates.length;
+    const blockedCount =
+      sendableCandidates.length - sendableReadyCandidates.length;
+    const excludedEarsiv = checked
+      ? earsivCandidates.length
+      : 0;
     const confirmed = window.confirm(
-      `${readyCandidates.length} fatura adayı Uyumsoft'a taslak olarak gönderilecek.` +
+      `${sendableReadyCandidates.length} fatura adayı Uyumsoft'a taslak olarak gönderilecek.` +
         (blockedCount > 0
           ? ` ${blockedCount} eksik/kontrollü aday gönderilmeyecek.`
+          : "") +
+        (excludedEarsiv > 0
+          ? ` ${excludedEarsiv} E-Arşiv adayı (aktarılmayanlar) gönderilmeyecek.`
           : "") +
         " Bu işlem canlı fatura gönderimi yapmaz, yalnızca Uyumsoft taslağı oluşturur. Devam edilsin mi?"
     );
@@ -1102,7 +1173,9 @@ export default function UttsBillingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rows: readyCandidates.flatMap((candidate) => candidate.exportRows),
+          rows: sendableReadyCandidates.flatMap(
+            (candidate) => candidate.exportRows
+          ),
           invoiceDate: filters.invoiceDate,
           profile: filters.invoiceProfile,
           mergeByBuyer,
@@ -1120,7 +1193,9 @@ export default function UttsBillingPage() {
       }
 
       toast.success(
-        `${data.draftCount || readyCandidates.length} Uyumsoft taslağı oluşturuldu`
+        `${
+          data.draftCount || sendableReadyCandidates.length
+        } Uyumsoft taslağı oluşturuldu`
       );
     } catch {
       toast.error("Uyumsoft taslakları oluşturulurken hata oluştu");
@@ -1378,18 +1453,47 @@ export default function UttsBillingPage() {
                   Aynı Alıcıları Birleştir
                 </Button>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={exporting || invoiceCandidates.length === 0}
-                onClick={exportUyumsoftExcel}
-              >
-                {exporting
-                  ? "Excel Hazırlanıyor..."
-                  : issueCount > 0
-                  ? "Eksiklerle Excel Oluştur"
-                  : "Uyumsoft Excel Formatı Oluştur"}
-              </Button>
+              {checked ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting || efaturaCandidates.length === 0}
+                    onClick={() => exportUyumsoftExcel("efatura")}
+                  >
+                    E-Fatura Excel ({efaturaCandidates.length})
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting || earsivCandidates.length === 0}
+                    onClick={() => exportUyumsoftExcel("earsiv")}
+                  >
+                    E-Arşiv Excel ({earsivCandidates.length})
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting || invoiceCandidates.length === 0}
+                    onClick={() => exportUyumsoftExcel("all")}
+                  >
+                    İkisi Birlikte Excel
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={exporting || invoiceCandidates.length === 0}
+                  onClick={() => exportUyumsoftExcel("all")}
+                >
+                  {exporting
+                    ? "Excel Hazırlanıyor..."
+                    : issueCount > 0
+                    ? "Eksiklerle Excel Oluştur"
+                    : "Uyumsoft Excel Formatı Oluştur"}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -1411,17 +1515,45 @@ export default function UttsBillingPage() {
                 size="sm"
                 disabled={
                   drafting ||
-                  readyCandidates.length === 0 ||
+                  sendableReadyCandidates.length === 0 ||
                   !uyumsoftConnected
                 }
                 onClick={createUyumsoftDrafts}
               >
-                {drafting ? "Taslak Oluşturuluyor..." : "Uyumsoft Taslak Oluştur"}
+                {drafting
+                  ? "Taslak Oluşturuluyor..."
+                  : `Uyumsoft Taslak Oluştur${
+                      checked ? ` (${sendableReadyCandidates.length})` : ""
+                    }`}
               </Button>
             </div>
           </div>
         </CardHeader>
         <CardContent>
+          {checked && (
+            <div className="mb-4 flex w-fit rounded-lg border bg-muted/40 p-1">
+              <Button
+                variant={activeTab === "efatura" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => {
+                  setActiveTab("efatura");
+                  setPage(1);
+                }}
+              >
+                E-Fatura ({efaturaCandidates.length})
+              </Button>
+              <Button
+                variant={activeTab === "earsiv" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => {
+                  setActiveTab("earsiv");
+                  setPage(1);
+                }}
+              >
+                E-Arşiv ({earsivCandidates.length})
+              </Button>
+            </div>
+          )}
           <div className="overflow-auto">
             <Table>
               <TableHeader>
@@ -1532,23 +1664,50 @@ export default function UttsBillingPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => startEditCandidate(candidate)}
-                      >
-                        Düzenle
-                      </Button>
+                      <div className="flex flex-col items-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => startEditCandidate(candidate)}
+                        >
+                          Düzenle
+                        </Button>
+                        {checked &&
+                          activeTab === "earsiv" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => transferToEfatura(candidate.key)}
+                            >
+                              E-Fatura&apos;ya aktar
+                            </Button>
+                          )}
+                        {checked &&
+                          activeTab === "efatura" &&
+                          transferredKeys[candidate.key] && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => transferToEarsiv(candidate.key)}
+                            >
+                              E-Arşiv&apos;e geri al
+                            </Button>
+                          )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
-                {invoiceCandidates.length === 0 && (
+                {displayedCandidates.length === 0 && (
                   <TableRow>
                     <TableCell
                       colSpan={11}
                       className="py-8 text-center text-muted-foreground"
                     >
-                      Fatura adayı hazırlamak için UTTS verisi çekin.
+                      {invoiceCandidates.length === 0
+                        ? "Fatura adayı hazırlamak için UTTS verisi çekin."
+                        : activeTab === "earsiv"
+                        ? "E-Arşiv sekmesinde aday yok."
+                        : "E-Fatura sekmesinde aday yok."}
                     </TableCell>
                   </TableRow>
                 )}
@@ -1556,12 +1715,12 @@ export default function UttsBillingPage() {
             </Table>
           </div>
 
-          {invoiceCandidates.length > PAGE_SIZE && (
+          {displayedCandidates.length > PAGE_SIZE && (
             <div className="mt-4 flex items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">
                 {(page - 1) * PAGE_SIZE + 1}-
-                {Math.min(page * PAGE_SIZE, invoiceCandidates.length)} /{" "}
-                {invoiceCandidates.length} aday
+                {Math.min(page * PAGE_SIZE, displayedCandidates.length)} /{" "}
+                {displayedCandidates.length} aday
               </p>
               <div className="flex items-center gap-2">
                 <Button
