@@ -31,6 +31,10 @@ const PAGE_SIZE = 25;
 const API_PAGE_SIZE = 500;
 const MAX_API_PAGES = 20;
 const DEFAULT_VAT_RATE = 20;
+// Sayfa içi çalışma durumunu (çekilen kayıtlar, mükellef sonuçları, aktarımlar,
+// filtreler) tarayıcıda saklarız; sayfadan çıkıp dönünce veri korunur, yeni
+// "Fatura Adaylarını Hazırla" ile üzerine yazılır.
+const BILLING_STORAGE_KEY = "utts-billing-state-v1";
 
 const statusLabels: Record<string, string> = {
   "5": "Fiziksel Montaj Tamamlandı",
@@ -305,13 +309,77 @@ function splitBuyerName(row: UttsRow) {
   };
 }
 
+// UTTS'in döndürdüğü "companyTypeStr" alanı: "Tüzel Kişilik", "Şahıs Firması"
+// veya boş gelebiliyor. Boş gelmiyorsa en güvenilir kaynak budur.
+function getCompanyType(row: UttsRow): "company" | "person" | "" {
+  const raw = getText(row, "companyTypeStr").toLocaleLowerCase("tr-TR");
+  if (!raw) return "";
+  if (raw.includes("tüzel") || raw.includes("tuzel")) return "company";
+  if (raw.includes("şahıs") || raw.includes("sahis") || raw.includes("birey")) {
+    return "person";
+  }
+  return "";
+}
+
+// İsimden "şirket gibi mi" tahmini. Sadece companyTypeStr boş olduğunda tip
+// tahmini için ve şüpheli kayıtlara uyarı koymak için kullanılır; tek başına
+// kesin karar kaynağı değildir.
+function looksLikeCompanyName(name: string): boolean {
+  const upper = (name || "").toLocaleUpperCase("tr-TR");
+  if (!upper.trim()) return false;
+  const strong = [
+    "LİMİTED",
+    "LIMITED",
+    "ŞİRKET",
+    "SIRKET",
+    "ANONİM",
+    "ANONIM",
+    "SANAY",
+    "TİCARET",
+    "TICARET",
+    "KOLLEKT",
+    "HOLDİNG",
+    "HOLDING",
+    "OTOMOT",
+    "İNŞAAT",
+    "INSAAT",
+    "TURİZM",
+    "TURIZM",
+    "NAKLİ",
+    "NAKLI",
+    "LOJİST",
+    "LOJIST",
+    "ENERJİ",
+    "ENERJI",
+    "MAĞAZ",
+    "TEKSTİL",
+    "TEKSTIL",
+    "KİMYA",
+    "KIMYA",
+    "GROUP",
+    "GRUP",
+  ];
+  if (strong.some((word) => upper.includes(word))) return true;
+  // Kısaltmalar: LTD, ŞTİ, STİ, A.Ş, AŞ (kelime sınırıyla)
+  if (/(^|[^A-ZÇĞİÖŞÜ])(LTD|ŞT[İI]|ŞTI|ST[İI]|A\.?Ş)([^A-ZÇĞİÖŞÜ]|$)/.test(upper)) {
+    return true;
+  }
+  return false;
+}
+
 function getBuyerType(row: UttsRow): InvoiceCandidate["buyerType"] {
   const manualType = getText(row, "invoiceBuyerType");
   if (manualType === "company" || manualType === "person") return manualType;
 
+  const companyType = getCompanyType(row);
+  if (companyType) return companyType;
+
+  // companyTypeStr boş: TCKN ise kesin şahıs; VKN ise güvenli varsayım tüzel
+  // (belirsiz olanlara buildInvoiceCandidates'te uyarı eklenir, kullanıcı
+  // "Düzenle" ile düzeltebilir).
   const taxNumber = getTaxNumber(row);
-  if (taxNumber.length === 10) return "company";
   if (taxNumber.length === 11) return "person";
+  if (taxNumber.length === 10) return "company";
   return "unknown";
 }
 
@@ -553,6 +621,19 @@ function buildInvoiceCandidates(rows: UttsRow[]) {
     if (buyerType === "person" && !buyer.surname) {
       issues.push("Şahıs için soyadı eksik");
     }
+
+    // Tip belirsizlik uyarıları: kullanıcı "Düzenle" ile düzeltebilsin.
+    const companyType = getCompanyType(row);
+    const nameLooksCompany = looksLikeCompanyName(buyer.name);
+    if (companyType === "person" && nameLooksCompany) {
+      warnings.push("Şahıs firması ama ünvan şirket gibi; kontrol edin");
+    }
+    if (companyType === "company" && taxNumber.length === 10 && !nameLooksCompany) {
+      warnings.push("Tüzel görünüyor ama ünvan kişi adı gibi; kontrol edin");
+    }
+    if (!companyType && taxNumber.length === 10 && !nameLooksCompany) {
+      warnings.push("UTTS'de mükellef türü boş; tür tahmin edildi, kontrol edin");
+    }
     if (!isInvoiceReady(row)) {
       warnings.push("Aktivasyon tamamlanmamış olabilir");
     }
@@ -677,6 +758,57 @@ export default function UttsBillingPage() {
     invoiceDate: today(),
     invoiceProfile: "TICARIFATURA",
   });
+  // localStorage'dan ilk yükleme tamamlanmadan kaydetme effect'i çalışmasın.
+  const [restored, setRestored] = useState(false);
+
+  // Sayfaya girince saklanan çalışma durumunu geri yükle.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(BILLING_STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved.rows)) setRows(saved.rows);
+        if (saved.routings && typeof saved.routings === "object") {
+          setRoutings(saved.routings);
+        }
+        if (saved.transferredKeys && typeof saved.transferredKeys === "object") {
+          setTransferredKeys(saved.transferredKeys);
+        }
+        if (typeof saved.mergeByBuyer === "boolean") {
+          setMergeByBuyer(saved.mergeByBuyer);
+        }
+        if (saved.activeTab === "efatura" || saved.activeTab === "earsiv") {
+          setActiveTab(saved.activeTab);
+        }
+        if (saved.filters && typeof saved.filters === "object") {
+          setFilters((prev) => ({ ...prev, ...saved.filters }));
+        }
+      }
+    } catch {
+      // Bozuk/uyumsuz kayıt varsa yok say.
+    }
+    setRestored(true);
+  }, []);
+
+  // Çalışma durumu değiştikçe sakla (yalnızca ilk yükleme bittikten sonra).
+  useEffect(() => {
+    if (!restored) return;
+    try {
+      localStorage.setItem(
+        BILLING_STORAGE_KEY,
+        JSON.stringify({
+          rows,
+          routings,
+          transferredKeys,
+          mergeByBuyer,
+          activeTab,
+          filters,
+        })
+      );
+    } catch {
+      // Kota dolabilir; sessizce geç.
+    }
+  }, [restored, rows, routings, transferredKeys, mergeByBuyer, activeTab, filters]);
 
   useEffect(() => {
     fetch("/api/utts/settings")
@@ -1092,13 +1224,23 @@ export default function UttsBillingPage() {
         return;
       }
 
-      // E-faturası VKN yerine TCKN üzerinde olan tüzel kişiler (via: "tckn"):
-      // satırı TCKN'e çevirip gerçek kişi (ad/soyad) olarak işaretliyoruz ki
-      // taslak Uyumsoft'a TCKN ile ve doğru kişi yapısında gitsin.
+      // Bazı alıcılara faturada VKN yerine TCKN yazmamız gerekiyor:
+      //  1) E-faturası VKN yerine TCKN üzerinde olan tüzel kişiler (via "tckn").
+      //  2) Şahıs firması olup mükellef sorgusunda E-Fatura çıkmayanlar (E-Arşiv)
+      //     ve elinde TCKN olanlar — gerçek kişiye E-Arşiv TCKN ile kesilir.
+      // (Şahıs + E-Arşiv ama TCKN yoksa VKN ile kalır.) Satırı TCKN'e çevirip
+      // gerçek kişi (ad/soyad) olarak işaretliyoruz.
       const tcknOverrides: Record<string, InvoiceBuyerOverride> = {};
       for (const candidate of invoiceCandidates) {
         const routing = results[getRoutingKey(candidate.row)];
-        if (!routing || routing.via !== "tckn") continue;
+        if (!routing) continue;
+
+        const pair = getVknTcknPair(candidate.row);
+        const buyerType = getBuyerType(candidate.row);
+        const shouldUseTckn =
+          routing.via === "tckn" ||
+          (!routing.isEInvoice && buyerType === "person" && !!pair.tckn);
+        if (!shouldUseTckn || !pair.tckn) continue;
 
         const fullName = getBuyerName(candidate.row).trim();
         const parts = fullName.split(/\s+/).filter(Boolean);
@@ -1107,7 +1249,7 @@ export default function UttsBillingPage() {
 
         tcknOverrides[sourceTaxNumber] = {
           sourceTaxNumber,
-          taxNumber: routing.taxNumber,
+          taxNumber: pair.tckn,
           buyerType: "person",
           buyerName: hasSurname ? parts.slice(0, -1).join(" ") : fullName,
           buyerSurname: hasSurname ? parts[parts.length - 1] : "",
@@ -1254,6 +1396,23 @@ export default function UttsBillingPage() {
                   (checkProgress.done / Math.max(checkProgress.total, 1)) * 100
                 )}
               </span>
+            </div>
+          </div>
+        </div>
+      )}
+      {drafting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-lg border bg-background p-6 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+              <h3 className="text-lg font-semibold">Taslaklar oluşturuluyor</h3>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {sendableReadyCandidates.length} fatura adayı Uyumsoft&apos;a taslak
+              olarak gönderiliyor. Lütfen bekleyin.
+            </p>
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-foreground" />
             </div>
           </div>
         </div>
