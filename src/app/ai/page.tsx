@@ -11,6 +11,9 @@ import {
   PlugZap,
 } from "lucide-react";
 
+// Gösterge paneli her istekte güncel VRD satış verisini okur (build anında dondurulmaz).
+export const dynamic = "force-dynamic";
+
 const toneIcon = {
   warning: <TriangleAlert className="h-4 w-4 text-amber-500" />,
   negative: <Flame className="h-4 w-4 text-red-500" />,
