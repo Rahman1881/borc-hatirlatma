@@ -6,7 +6,7 @@ import {
   type Aggregation,
   type CalendarDay,
 } from "@/lib/vrd-sales";
-import { askGemini, isGeminiConfigured } from "@/lib/gemini";
+import { isGeminiConfigured } from "@/lib/gemini";
 import { isPlacesConfigured } from "@/lib/places";
 
 // Gerçek VRD satış verisinden Telegram raporları ve AI sohbet bağlamı üretir.
@@ -58,30 +58,6 @@ function aggregationLines(agg: Aggregation): string {
   return parts.join("\n");
 }
 
-// Bir gün/dönem için kısa AI yorumu (Gemini varsa). Hata olursa boş döner.
-async function aiComment(title: string, agg: Aggregation): Promise<string> {
-  if (!isGeminiConfigured()) return "";
-  try {
-    const data = `Dönem: ${title}
-Toplam ciro: ${agg.toplamTutar} TL
-Toplam litre: ${agg.toplamLitre}
-Fiş adedi: ${agg.fisAdedi}
-Yakıtlar: ${agg.yakitlar.map((f) => `${f.label} ${f.tutar}TL/${f.litre}L`).join(", ")}
-Müşteri tipi: ${agg.musteriTipi.map((m) => `${m.label} ${m.tutar}TL`).join(", ")}
-En çok alan filolar: ${agg.topFilolar.slice(0, 5).map((f) => `${f.ad} ${f.tutar}TL`).join(", ")}`;
-
-    const reply = await askGemini(
-      [{ role: "user", text: `Bu satış verisini 1-2 cümleyle yorumla:\n${data}` }],
-      `Sen bir akaryakıt istasyonu iş zekası asistanısın. Verilen satış özetini patron için
-çok kısa (en fazla 2 cümle), pratik ve Türkçe yorumla. Dikkat çeken nokta varsa belirt.
-Rakamları ₺ ile yaz. Selamlama yapma, doğrudan yoruma geç.`
-    );
-    return reply.trim();
-  } catch {
-    return "";
-  }
-}
-
 // En yeni günün (ya da verilen iso'nun) tüm vardiyalarını birleştirip özetler.
 function summarizeDay(day: CalendarDay): Aggregation {
   const files = day.vardiyalar.map((v) => v.file);
@@ -113,7 +89,6 @@ export async function buildDailyReport(): Promise<ReportResult> {
   // Takvim yeni -> eski sıralı; bugünden önceki ilk gün = dün (ya da son tam gün).
   const day = calendar.find((d) => d.iso < today) ?? calendar[0];
   const agg = summarizeDay(day);
-  const comment = await aiComment(fmtDay(day.iso), agg);
 
   const vardiyaLines = day.vardiyalar
     .map((v) => `  • ${v.no}. Vardiya: ${tl(v.toplamTutar)} · ${lt(v.toplamLitre)}`)
@@ -122,7 +97,6 @@ export async function buildDailyReport(): Promise<ReportResult> {
   let text = `📊 <b>${getStationName()} — Günlük Satış Raporu</b>\n${fmtDay(day.iso)}\n\n`;
   text += aggregationLines(agg);
   if (vardiyaLines) text += `\n\n<b>Vardiyalar:</b>\n${vardiyaLines}`;
-  if (comment) text += `\n\n💡 ${comment}`;
   return { ok: true, text };
 }
 
@@ -134,8 +108,6 @@ export async function buildShiftReport(file: string): Promise<ReportResult> {
     return { ok: false, text: `Vardiya dosyası bulunamadı: ${file}` };
   }
   const agg = summarizeFiles([file]);
-  const title = `${fmtDay(shift.iso)} · ${shift.vardiyaNo}. Vardiya`;
-  const comment = await aiComment(title, agg);
 
   // Vardiyanın saat aralığı (ilk -> son satış saati).
   const saatler = agg.saatler.filter((h) => h.tutar > 0).map((h) => h.saat);
@@ -150,7 +122,6 @@ export async function buildShiftReport(file: string): Promise<ReportResult> {
     shift.iso
   )}${aralik ? ` · ${aralik}` : ""}\n\n`;
   text += aggregationLines(agg);
-  if (comment) text += `\n\n💡 ${comment}`;
   return { ok: true, text };
 }
 
@@ -167,7 +138,6 @@ export async function buildWeeklyReport(): Promise<ReportResult> {
   const files = days.flatMap((d) => d.vardiyalar.map((v) => v.file));
   const agg = summarizeFiles(files);
   const period = `${fmtDay(days[days.length - 1].iso)} – ${fmtDay(days[0].iso)}`;
-  const comment = await aiComment(period, agg);
 
   const dayLines = days
     .map((d) => {
@@ -179,7 +149,6 @@ export async function buildWeeklyReport(): Promise<ReportResult> {
   let text = `📊 <b>${getStationName()} — Haftalık Rapor</b>\n${period}\n\n`;
   text += aggregationLines(agg);
   if (dayLines) text += `\n\n<b>Günlük ciro:</b>\n${dayLines}`;
-  if (comment) text += `\n\n💡 ${comment}`;
   return { ok: true, text };
 }
 

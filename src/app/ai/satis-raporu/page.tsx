@@ -11,7 +11,6 @@ import {
   Clock,
   Users,
   Truck,
-  Sparkles,
   FolderOpen,
   Calendar,
   CalendarDays,
@@ -47,7 +46,6 @@ type CalendarDay = {
 type Data = {
   calendar: CalendarDay[];
   vrdDir: string;
-  geminiConfigured: boolean;
 };
 
 type Mode = "gun" | "hafta" | "ay" | "aralik";
@@ -118,8 +116,6 @@ export default function SatisRaporuPage() {
 
   const [summary, setSummary] = useState<Aggregation | null>(null);
   const [summarizing, setSummarizing] = useState(false);
-  const [analysis, setAnalysis] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
 
   // data?.calendar her render'da yeni dizi üretmesin diye memolanır (useMemo bağımlılıkları kararlı kalsın).
   const calendar = useMemo(() => data?.calendar ?? [], [data]);
@@ -243,7 +239,6 @@ export default function SatisRaporuPage() {
   // Seçim değişince özet çek.
   useEffect(() => {
     if (calendar.length === 0) return;
-    setAnalysis("");
     if (selection.files.length === 0) {
       setSummary(null);
       return;
@@ -278,31 +273,6 @@ export default function SatisRaporuPage() {
     () => Math.max(1, ...(summary?.saatler.map((h) => h.tutar) ?? [1])),
     [summary]
   );
-
-  async function runAnalysis() {
-    if (selection.files.length === 0) return;
-    setAnalyzing(true);
-    setError("");
-    setAnalysis("");
-    try {
-      const res = await fetch("/api/ai/satis-raporu", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "analyze",
-          files: selection.files,
-          label: selection.label,
-        }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || "Analiz başarısız.");
-      setAnalysis(d.analysis || "");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Analiz yapılamadı.");
-    } finally {
-      setAnalyzing(false);
-    }
-  }
 
   const dayObj = calendar.find((d) => d.iso === selDay);
 
@@ -536,14 +506,7 @@ export default function SatisRaporuPage() {
             </div>
           ) : summary ? (
             <div className={summarizing ? "opacity-60 transition-opacity" : ""}>
-              <SummaryView
-                summary={summary}
-                maxHour={maxHour}
-                geminiConfigured={data?.geminiConfigured ?? false}
-                analysis={analysis}
-                analyzing={analyzing}
-                onAnalyze={runAnalysis}
-              />
+              <SummaryView summary={summary} maxHour={maxHour} />
             </div>
           ) : null}
         </>
@@ -555,17 +518,9 @@ export default function SatisRaporuPage() {
 function SummaryView({
   summary,
   maxHour,
-  geminiConfigured,
-  analysis,
-  analyzing,
-  onAnalyze,
 }: {
   summary: Aggregation;
   maxHour: number;
-  geminiConfigured: boolean;
-  analysis: string;
-  analyzing: boolean;
-  onAnalyze: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -738,39 +693,6 @@ function SummaryView({
         </Panel>
       )}
 
-      {/* AI yorum */}
-      <Panel>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <p className="text-sm font-semibold">AI Dönem Yorumu</p>
-          </div>
-          <button
-            onClick={onAnalyze}
-            disabled={analyzing || !geminiConfigured}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
-          >
-            <Sparkles className="h-4 w-4" />{" "}
-            {analyzing ? "Analiz ediliyor…" : "Analiz Et"}
-          </button>
-        </div>
-        {!geminiConfigured && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            AI yorumu için Ayarlar &gt; Yapay Zeka bölümünden Gemini anahtarını girin.
-          </p>
-        )}
-        {analysis ? (
-          <div className="mt-3 whitespace-pre-wrap rounded-lg bg-muted/40 px-3 py-3 text-sm leading-relaxed">
-            {analysis}
-          </div>
-        ) : (
-          !analyzing && (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Seçili dönemin satış özetini AI ile yorumlayın.
-            </p>
-          )
-        )}
-      </Panel>
     </div>
   );
 }

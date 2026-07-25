@@ -74,9 +74,10 @@ export async function askGemini(
     })),
     generationConfig: {
       temperature: 0.4,
-      // Gemini 3.x flash "düşünme" tokenları bütçeden harcar; cevabın kesilmemesi
-      // için yüksek tutulur (düşük tutulursa yanıt MAX_TOKENS ile yarıda kalır).
-      maxOutputTokens: 4096,
+      // "Düşünme" (thinking) tokenları da OUTPUT olarak faturalandırılır ve çok
+      // değişkendir; kapatıp çıktıyı sınırlayarak maliyeti öngörülebilir tutuyoruz.
+      thinkingConfig: { thinkingBudget: 0 },
+      maxOutputTokens: 800,
     },
   };
 
@@ -128,11 +129,10 @@ export async function askGeminiJson<T>(
     contents: [{ role: "user", parts: [{ text: userText }] }],
     generationConfig: {
       temperature: 0.2,
-      // Gemini 3.x flash "düşünme" tokenları bu bütçeden harcanır ve çok değişken
-      // olabilir (yüzlerce ila birkaç bin token). Düşük tutulursa düşünme bütçeyi
-      // tüketip JSON çıktısı yarıda kalır (MAX_TOKENS) ve parse hatası verir. Bu
-      // yüzden düşünme + çıktı birlikte sığsın diye yüksek tutulur.
-      maxOutputTokens: 8192,
+      // "Düşünme" tokenları da OUTPUT olarak faturalandırılır. Kapatınca JSON çıktısı
+      // düşünme bütçesi harcamadan doğrudan üretilir; maliyet öngörülebilir kalır.
+      thinkingConfig: { thinkingBudget: 0 },
+      maxOutputTokens: 1500,
       responseMimeType: "application/json",
     },
   };
@@ -192,8 +192,10 @@ export async function askGeminiGrounded(
     tools: [{ google_search: {} }],
     generationConfig: {
       temperature: 0.3,
-      // Grounding + düşünme tokenları bütçeyi paylaşır; cevabın kesilmemesi için yüksek.
-      maxOutputTokens: 8192,
+      // "Düşünme" tokenları da OUTPUT olarak faturalandırılır; kapatıp çıktıyı
+      // sınırlıyoruz. Grounding metni için yine de biraz daha geniş tutuluyor.
+      thinkingConfig: { thinkingBudget: 0 },
+      maxOutputTokens: 2000,
     },
   };
 

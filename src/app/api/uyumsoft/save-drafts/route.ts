@@ -463,6 +463,7 @@ function buildInvoiceInfoXml(input: {
             <cbc:CustomizationID>TR1.2</cbc:CustomizationID>
             <cbc:ProfileID>${profileId}</cbc:ProfileID>
             <cbc:ID/>
+            <cbc:CopyIndicator>false</cbc:CopyIndicator>
             <cbc:UUID>${uuid}</cbc:UUID>
             <cbc:IssueDate>${issueDate}</cbc:IssueDate>
             <cbc:IssueTime>${issueTime}</cbc:IssueTime>
