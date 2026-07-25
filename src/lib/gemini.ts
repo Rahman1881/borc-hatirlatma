@@ -111,64 +111,6 @@ export async function askGemini(
   return text;
 }
 
-// Gemini'den JSON çıktı ister (responseMimeType=application/json). Parse edilmiş veri döner.
-export async function askGeminiJson<T>(
-  systemPrompt: string,
-  userText: string
-): Promise<T> {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    throw new Error("Gemini API anahtarı tanımlı değil.");
-  }
-
-  const model = getGeminiModel();
-  const url = `${API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-  const body = {
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: "user", parts: [{ text: userText }] }],
-    generationConfig: {
-      temperature: 0.2,
-      // "Düşünme" tokenları da OUTPUT olarak faturalandırılır. Kapatınca JSON çıktısı
-      // düşünme bütçesi harcamadan doğrudan üretilir; maliyet öngörülebilir kalır.
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 1500,
-      responseMimeType: "application/json",
-    },
-  };
-
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const err = await res.json();
-      detail = err?.error?.message || JSON.stringify(err);
-    } catch {
-      detail = await res.text();
-    }
-    throw new Error(`Gemini isteği başarısız (${res.status}): ${detail}`);
-  }
-
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts
-    ?.map((p: { text?: string }) => p?.text || "")
-    .join("")
-    .trim();
-
-  if (!text) throw new Error("Gemini boş cevap döndürdü.");
-
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error("Gemini geçerli JSON döndürmedi.");
-  }
-}
-
 export type GroundingSource = { title: string; url: string };
 
 // Gemini'ye Google Arama (grounding) aracıyla güncel web'i kendisi araştırtır.

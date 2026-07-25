@@ -79,8 +79,6 @@ const ilceler: Record<string, string[]> = {
   ],
 };
 
-type Potential = "Yüksek" | "Orta" | "Düşük";
-
 type Lead = {
   id: string;
   name: string;
@@ -95,9 +93,7 @@ type Lead = {
   lng: number | null;
   businessStatus: string;
   profile: string;
-  potential: Potential;
   sector: string;
-  reason: string;
 };
 
 type SavedCustomer = Lead & {
@@ -116,7 +112,6 @@ type ScanHistoryEntry = {
   ilce: string;
   region: string;
   profiles: string[];
-  scored: boolean;
   leads: Lead[];
 };
 
@@ -125,12 +120,6 @@ const HISTORY_LIMIT = 30;
 const PAGE_SIZE = 6;
 // Aynı anda en fazla bu kadar işletme profili seçilebilir (performans için).
 const MAX_PROFILES = 3;
-
-const potentialTone: Record<Potential, "positive" | "warning" | "neutral"> = {
-  Yüksek: "positive",
-  Orta: "warning",
-  Düşük: "neutral",
-};
 
 const statusTone: Record<SavedCustomer["status"], "primary" | "warning" | "positive" | "neutral"> = {
   Yeni: "neutral",
@@ -162,7 +151,6 @@ export default function MusteriBulucuPage() {
   const [needsKey, setNeedsKey] = useState(false);
   const [results, setResults] = useState<Lead[] | null>(null);
   const [lastRegion, setLastRegion] = useState("");
-  const [scored, setScored] = useState(false);
   const [page, setPage] = useState(0);
   // "form" = filtre ekranı, "results" = bulunan müşteriler ayrı sayfası
   const [view, setView] = useState<"form" | "results">("form");
@@ -207,11 +195,10 @@ export default function MusteriBulucuPage() {
     try {
       const r = localStorage.getItem(RESULTS_KEY);
       if (r) {
-        const p = JSON.parse(r) as { leads: Lead[]; region: string; scored: boolean };
+        const p = JSON.parse(r) as { leads: Lead[]; region: string };
         if (p && Array.isArray(p.leads)) {
           setResults(p.leads);
           setLastRegion(p.region || "");
-          setScored(!!p.scored);
           // Önceki tarama sonuçları varsa doğrudan sonuç sayfasını göster.
           if (p.leads.length > 0) setView("results");
         }
@@ -234,9 +221,9 @@ export default function MusteriBulucuPage() {
 
   const savedIds = useMemo(() => new Set(saved.map((s) => s.id)), [saved]);
 
-  function persistResults(leads: Lead[], region: string, sc: boolean) {
+  function persistResults(leads: Lead[], region: string) {
     try {
-      localStorage.setItem(RESULTS_KEY, JSON.stringify({ leads, region, scored: sc }));
+      localStorage.setItem(RESULTS_KEY, JSON.stringify({ leads, region }));
     } catch {
       // yok say
     }
@@ -308,8 +295,7 @@ export default function MusteriBulucuPage() {
       const reg = data.region || region;
       setResults(leads);
       setLastRegion(reg);
-      setScored(!!data.scored);
-      persistResults(leads, reg, !!data.scored);
+      persistResults(leads, reg);
       addToHistory({
         id: `${Date.now()}`,
         scannedAt: Date.now(),
@@ -317,7 +303,6 @@ export default function MusteriBulucuPage() {
         ilce,
         region: reg,
         profiles: selected,
-        scored: !!data.scored,
         leads,
       });
       setView("results");
@@ -341,7 +326,7 @@ export default function MusteriBulucuPage() {
     storePost({ action: "save", customer: sc });
     setResults((r) => {
       const n = r ? r.filter((x) => x.id !== l.id) : r;
-      if (n) persistResults(n, lastRegion, scored);
+      if (n) persistResults(n, lastRegion);
       return n;
     });
   }
@@ -460,11 +445,11 @@ export default function MusteriBulucuPage() {
                 <Sparkles className="h-5 w-5" />
               </span>
               <div className="flex-1">
-                <p className="text-sm font-semibold">AI Müşteri Taraması</p>
+                <p className="text-sm font-semibold">Müşteri Taraması</p>
                 <p className="mt-0.5 text-sm text-muted-foreground">
-                  İl/ilçe ve işletme profillerini seç. Yapay zeka bölgedeki gerçek
-                  işletmeleri bulur ve akaryakıt müşterisi potansiyeline göre puanlar.
-                  Kayıtlı müşteriler tekrar listelenmez.
+                  İl/ilçe ve işletme profillerini seç. Bölgedeki gerçek işletmeler
+                  (ad, adres, telefon, harita) bulunur ve listelenir. Kayıtlı
+                  müşteriler tekrar listelenmez.
                 </p>
 
                 <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -612,14 +597,9 @@ export default function MusteriBulucuPage() {
                   <Target className="h-5 w-5" />
                 </span>
                 <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold">
-                      {visible.length} potansiyel müşteri bulundu
-                    </p>
-                    <Pill tone={scored ? "primary" : "neutral"}>
-                      {scored ? "AI puanladı" : "Puanlanmadı"}
-                    </Pill>
-                  </div>
+                  <p className="text-sm font-semibold">
+                    {visible.length} potansiyel müşteri bulundu
+                  </p>
                   <p className="mt-0.5 text-sm text-muted-foreground">
                     {lastRegion || "Tarama sonuçları"}
                   </p>
@@ -818,14 +798,7 @@ function LeadCard({
             <p className="text-xs text-muted-foreground">{lead.sector || lead.profile}</p>
           </div>
         </div>
-        <Pill tone={potentialTone[lead.potential]}>{lead.potential} potansiyel</Pill>
       </div>
-
-      {lead.reason && (
-        <p className="mt-3 rounded-lg bg-muted/40 px-3 py-2 text-xs italic text-muted-foreground">
-          “{lead.reason}”
-        </p>
-      )}
 
       <div className="mt-3 grid grid-cols-1 gap-2 text-sm">
         {lead.address && <Info icon={MapPin} text={lead.address} />}
@@ -938,7 +911,6 @@ function SavedList({
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-semibold leading-tight">{c.name}</p>
-                  <Pill tone={potentialTone[c.potential]}>{c.potential}</Pill>
                   <Pill tone={statusTone[c.status]}>{c.status}</Pill>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1144,9 +1116,6 @@ function HistoryDetail({
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold">{entry.region}</p>
                 <Pill tone="primary">{entry.leads.length} sonuç</Pill>
-                <Pill tone={entry.scored ? "primary" : "neutral"}>
-                  {entry.scored ? "AI puanladı" : "Puanlanmadı"}
-                </Pill>
               </div>
               <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" /> {formatScanDate(entry.scannedAt)}
@@ -1209,8 +1178,8 @@ function HistoryDetail({
 function ScanningModal({ region, count }: { region: string; count: number }) {
   const steps = [
     "Bölgedeki işletmeler taranıyor",
-    "Akaryakıt potansiyeli değerlendiriliyor",
-    "Sonuçlar puanlanıyor",
+    "İşletme bilgileri toplanıyor",
+    "Sonuçlar hazırlanıyor",
   ];
   const [step, setStep] = useState(0);
   useEffect(() => {
@@ -1231,7 +1200,7 @@ function ScanningModal({ region, count }: { region: string; count: number }) {
           </span>
         </div>
 
-        <p className="mt-6 text-base font-semibold">AI Müşterileri Tarıyor</p>
+        <p className="mt-6 text-base font-semibold">Müşteriler Taranıyor</p>
         <p className="mt-1 text-sm text-muted-foreground">
           <b className="text-foreground">{region}</b>
           {count > 0 ? ` · ${count} işletme profili` : ""}

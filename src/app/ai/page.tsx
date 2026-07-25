@@ -4,21 +4,12 @@ import { buildDashboardData, type DashboardData } from "@/lib/station-report";
 import {
   ArrowUpRight,
   ArrowDownRight,
-  TriangleAlert,
-  CircleCheck,
-  Flame,
   Sparkles,
   PlugZap,
 } from "lucide-react";
 
 // Gösterge paneli her istekte güncel VRD satış verisini okur (build anında dondurulmaz).
 export const dynamic = "force-dynamic";
-
-const toneIcon = {
-  warning: <TriangleAlert className="h-4 w-4 text-amber-500" />,
-  negative: <Flame className="h-4 w-4 text-red-500" />,
-  positive: <CircleCheck className="h-4 w-4 text-emerald-500" />,
-};
 
 function loadDashboard(): DashboardData {
   try {
@@ -33,14 +24,6 @@ function loadDashboard(): DashboardData {
       weekly: [],
       fuelMix: [],
       shifts: [],
-      alerts: [
-        {
-          title: "Veri okunamadı",
-          detail: "Pompa satış verisi (VRD) şu an okunamıyor.",
-          tone: "negative",
-          time: "Şimdi",
-        },
-      ],
     };
   }
 }
@@ -139,71 +122,35 @@ export default function AiDashboardPage() {
             </Panel>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <Panel className="lg:col-span-2">
-              <SectionTitle
-                title="Vardiya Performansı"
-                action={<Pill>{data.dateLabel}</Pill>}
-              />
-              <div className="overflow-hidden rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted text-muted-foreground">
-                    <tr>
-                      <th className="px-4 py-2.5 text-left font-medium">Vardiya</th>
-                      <th className="px-4 py-2.5 text-right font-medium">Ciro</th>
-                      <th className="px-4 py-2.5 text-right font-medium">Litre</th>
-                      <th className="px-4 py-2.5 text-right font-medium">Fiş</th>
+          <Panel>
+            <SectionTitle
+              title="Vardiya Performansı"
+              action={<Pill>{data.dateLabel}</Pill>}
+            />
+            <div className="overflow-hidden rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Vardiya</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Ciro</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Litre</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Fiş</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.shifts.map((s) => (
+                    <tr key={s.name} className="border-t">
+                      <td className="px-4 py-3 font-medium">{s.name}</td>
+                      <td className="px-4 py-3 text-right">{s.ciro}</td>
+                      <td className="px-4 py-3 text-right text-muted-foreground">{s.litre}</td>
+                      <td className="px-4 py-3 text-right text-muted-foreground">{s.musteri}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {data.shifts.map((s) => (
-                      <tr key={s.name} className="border-t">
-                        <td className="px-4 py-3 font-medium">{s.name}</td>
-                        <td className="px-4 py-3 text-right">{s.ciro}</td>
-                        <td className="px-4 py-3 text-right text-muted-foreground">{s.litre}</td>
-                        <td className="px-4 py-3 text-right text-muted-foreground">{s.musteri}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-
-            <Panel>
-              <SectionTitle title="Akıllı Uyarılar" />
-              <div className="space-y-3">
-                {data.alerts.map((a) => (
-                  <div key={a.title} className="flex gap-3 rounded-lg border bg-muted/50 p-3">
-                    <span className="mt-0.5">{toneIcon[a.tone]}</span>
-                    <div>
-                      <p className="text-sm font-medium">{a.title}</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{a.detail}</p>
-                      <p className="mt-1 text-[11px] text-muted-foreground/70">{a.time}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
         </>
-      )}
-
-      {!data.hasData && (
-        <Panel>
-          <SectionTitle title="Akıllı Uyarılar — Modül Durumu" />
-          <div className="space-y-3">
-            {data.alerts.map((a) => (
-              <div key={a.title} className="flex gap-3 rounded-lg border bg-muted/50 p-3">
-                <span className="mt-0.5">{toneIcon[a.tone]}</span>
-                <div>
-                  <p className="text-sm font-medium">{a.title}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{a.detail}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground/70">{a.time}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
       )}
     </div>
   );

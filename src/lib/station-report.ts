@@ -6,8 +6,6 @@ import {
   type Aggregation,
   type CalendarDay,
 } from "@/lib/vrd-sales";
-import { isGeminiConfigured } from "@/lib/gemini";
-import { isPlacesConfigured } from "@/lib/places";
 
 // Gerçek VRD satış verisinden Telegram raporları ve AI sohbet bağlamı üretir.
 
@@ -248,12 +246,6 @@ export type DashKpi = {
 export type DashWeekly = { gun: string; motorin: number; benzin: number; lpg: number };
 export type DashFuelMix = { name: string; value: number; color: string };
 export type DashShift = { name: string; ciro: string; litre: string; musteri: number };
-export type DashAlert = {
-  title: string;
-  detail: string;
-  tone: "positive" | "warning" | "negative";
-  time: string;
-};
 
 export type DashboardData = {
   hasData: boolean;
@@ -264,7 +256,6 @@ export type DashboardData = {
   weekly: DashWeekly[];
   fuelMix: DashFuelMix[];
   shifts: DashShift[];
-  alerts: DashAlert[];
 };
 
 const FUEL_COLORS: Record<string, string> = {
@@ -293,41 +284,11 @@ function fuelTutar(agg: Aggregation, yakit: string): number {
   return agg.yakitlar.find((f) => f.yakit === yakit)?.tutar ?? 0;
 }
 
-// Telegram botunun token'ı girilmiş mi? (Ayarlar > Telegram)
-function isTelegramConfigured(): boolean {
-  try {
-    const row = getDb()
-      .prepare("SELECT value FROM settings WHERE key = ?")
-      .get("telegram_bot_token") as { value: string } | undefined;
-    return !!(row?.value || "").trim();
-  } catch {
-    return false;
-  }
-}
-
 export function buildDashboardData(): DashboardData {
   const stationName = getStationName();
   const calendar = getCalendar();
 
-  // Hangi modüller bağlı? Akıllı Uyarılar bunlara göre kurulur.
-  const pompaConnected = calendar.length > 0;
-  const telegramConnected = isTelegramConfigured();
-  const aiConnected = isGeminiConfigured();
-  const placesConnected = isPlacesConfigured();
-
-  if (!pompaConnected) {
-    const alerts: DashAlert[] = [
-      {
-        title: "Pompa satış verisi bulunamadı",
-        detail:
-          "VRD klasöründe satış dosyası yok. Ayarlar > VRD klasörü yolunu kontrol edin.",
-        tone: "negative",
-        time: "Şimdi",
-      },
-      moduleAlert("Telegram botu", telegramConnected, "Ayarlar > Telegram'dan bot token girilince aktif olur."),
-      moduleAlert("AI asistan (Gemini)", aiConnected, "Ayarlar'dan Gemini API anahtarı girilince aktif olur."),
-      moduleAlert("Müşteri Bulucu (Google Places)", placesConnected, "Ayarlar > Google Places'tan API anahtarı girilince aktif olur."),
-    ];
+  if (calendar.length === 0) {
     return {
       hasData: false,
       stationName,
@@ -338,7 +299,6 @@ export function buildDashboardData(): DashboardData {
       weekly: [],
       fuelMix: [],
       shifts: [],
-      alerts,
     };
   }
 
@@ -412,51 +372,10 @@ export function buildDashboardData(): DashboardData {
     musteri: v.fisAdedi,
   }));
 
-  // --- Akıllı Uyarılar: bağlı modüllere ve gerçek veriye göre ---
-  const alerts: DashAlert[] = [];
-
-  // 1) En güncel günün ciro trendi (gerçek karşılaştırma)
-  if (prevAgg) {
-    if (ciroChange.positive) {
-      alerts.push({
-        title: `Ciro artışta (${ciroChange.change})`,
-        detail: `${fmtDay(day.iso)} cirosu önceki güne göre yükseldi: ${tl(agg.toplamTutar)}.`,
-        tone: "positive",
-        time: fmtDay(day.iso),
-      });
-    } else {
-      alerts.push({
-        title: `Ciro düşüşte (${ciroChange.change})`,
-        detail: `${fmtDay(day.iso)} cirosu önceki günün altında: ${tl(agg.toplamTutar)}. Nedeni kontrol edilmeli.`,
-        tone: "warning",
-        time: fmtDay(day.iso),
-      });
-    }
-  }
-
-  // 2) En çok satan yakıt (gerçek)
+  // En çok satan yakıt (özet metninde kullanılır)
   const topFuel = [...agg.yakitlar].filter((f) => f.tutar > 0).sort((a, b) => b.tutar - a.tutar)[0];
-  if (topFuel) {
-    alerts.push({
-      title: `En güçlü kalem: ${topFuel.label}`,
-      detail: `${fmtDay(day.iso)} cirosunun ${
-        agg.toplamTutar > 0 ? Math.round((topFuel.tutar / agg.toplamTutar) * 100) : 0
-      }%'i ${topFuel.label}: ${tl(topFuel.tutar)} / ${lt(topFuel.litre)}.`,
-      tone: "positive",
-      time: fmtDay(day.iso),
-    });
-  }
 
-  // 3) Modül durumları
-  alerts.push(moduleAlert("Telegram botu", telegramConnected, "Ayarlar > Telegram'dan bot token girilince rapor gönderir."));
-  if (!aiConnected) {
-    alerts.push(moduleAlert("AI asistan (Gemini)", false, "Ayarlar'dan Gemini API anahtarı girilince aktif olur."));
-  }
-  if (!placesConnected) {
-    alerts.push(moduleAlert("Müşteri Bulucu", false, "Ayarlar > Google Places'tan API anahtarı girilince aktif olur."));
-  }
-
-  // --- AI günlük özet metni (Gemini yoksa veriden kurulu kısa özet) ---
+  // --- Günlük özet metni (veriden kurulu kısa özet) ---
   const summary = buildDashboardSummary(stationName, day.iso, agg, prevAgg, topFuel?.label);
 
   return {
@@ -468,15 +387,7 @@ export function buildDashboardData(): DashboardData {
     weekly,
     fuelMix,
     shifts,
-    alerts,
   };
-}
-
-// Bir modülün bağlı/bağlı değil uyarısını üretir.
-function moduleAlert(name: string, connected: boolean, hintIfMissing: string): DashAlert {
-  return connected
-    ? { title: `${name} bağlı`, detail: "Modül aktif ve çalışıyor.", tone: "positive", time: "Aktif" }
-    : { title: `${name} bağlı değil`, detail: hintIfMissing, tone: "warning", time: "—" };
 }
 
 // Veriden kurulu kısa özet (AI çağrısı yapmadan; sayfa server-render hızlı kalsın).

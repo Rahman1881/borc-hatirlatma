@@ -5,11 +5,9 @@ import { Panel, Pill } from "@/components/ai/ui";
 import {
   Fuel,
   MapPin,
-  Sparkles,
   RefreshCw,
   KeyRound,
   Navigation,
-  TrendingUp,
   Download,
 } from "lucide-react";
 
@@ -50,7 +48,6 @@ type Overview = {
   prices: PriceRow[];
   stations: Station[];
   placesConfigured: boolean;
-  geminiConfigured: boolean;
   placesError?: string;
 };
 
@@ -75,9 +72,6 @@ export default function RekabetAnaliziPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  const [analysis, setAnalysis] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
   const [fetching, setFetching] = useState(false);
 
   async function load() {
@@ -141,26 +135,6 @@ export default function RekabetAnaliziPage() {
       return a.localeCompare(b, "tr");
     });
   }, [priceMap]);
-
-  async function runAnalysis() {
-    setAnalyzing(true);
-    setError("");
-    setAnalysis("");
-    try {
-      const res = await fetch("/api/ai/rekabet-analizi", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "analyze" }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || "Analiz başarısız.");
-      setAnalysis(d.analysis || "");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Analiz yapılamadı.");
-    } finally {
-      setAnalyzing(false);
-    }
-  }
 
   const sourceLabel: Record<Overview["priceSource"], string> = {
     cache: "Önbellek (bugün)",
@@ -315,40 +289,6 @@ export default function RekabetAnaliziPage() {
               </tbody>
             </table>
           </div>
-        )}
-      </Panel>
-
-      {/* AI analiz */}
-      <Panel>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="h-5 w-5 text-primary" />
-            <p className="text-sm font-semibold">AI Rekabet Yorumu</p>
-          </div>
-          <button
-            onClick={runAnalysis}
-            disabled={analyzing || (data ? !data.geminiConfigured : true)}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
-          >
-            <Sparkles className="h-4 w-4" /> {analyzing ? "Analiz ediliyor…" : "Analiz Et"}
-          </button>
-        </div>
-        {data && !data.geminiConfigured && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            AI yorumu için Ayarlar &gt; Yapay Zeka bölümünden Gemini anahtarını girin.
-          </p>
-        )}
-        {analysis ? (
-          <div className="mt-3 whitespace-pre-wrap rounded-lg bg-muted/40 px-3 py-3 text-sm leading-relaxed">
-            {analysis}
-          </div>
-        ) : (
-          !analyzing && (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Fiyatları girip &quot;Analiz Et&quot; ile bizim fiyatımızı çevredeki
-              rakiplerle kıyaslayan AI yorumunu alın.
-            </p>
-          )
         )}
       </Panel>
 

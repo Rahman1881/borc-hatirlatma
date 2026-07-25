@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchPlaces, isPlacesConfigured, type PlaceResult } from "@/lib/places";
-import { askGeminiJson, isGeminiConfigured } from "@/lib/gemini";
 
 export const maxDuration = 60;
 
@@ -133,16 +132,7 @@ const PROFILE_QUERIES: Record<string, string> = Object.fromEntries(
 
 export type Lead = PlaceResult & {
   profile: string;
-  potential: "Yüksek" | "Orta" | "Düşük";
   sector: string;
-  reason: string;
-};
-
-type ScoreItem = {
-  id: string;
-  potential: "Yüksek" | "Orta" | "Düşük";
-  sector: string;
-  reason: string;
 };
 
 function normName(s: string): string {
@@ -159,43 +149,6 @@ function asciiNorm(s: string): string {
     .replace(/[çğıöşüİâîû]/g, (c) => map[c] || c)
     .replace(/\s+/g, " ")
     .trim();
-}
-
-async function scoreLeads(
-  raw: (PlaceResult & { profile: string })[]
-): Promise<Map<string, ScoreItem>> {
-  const result = new Map<string, ScoreItem>();
-  if (!isGeminiConfigured() || raw.length === 0) return result;
-
-  const systemPrompt = `Sen bir Petrol Ofisi akaryakıt istasyonunun kurumsal satış uzmanısın. Sana bir işletme listesi verilecek. Her işletmeyi, istasyona POTANSİYEL AKARYAKIT/FİLO MÜŞTERİSİ olma açısından değerlendir.
-
-Kurallar:
-- "potential": yakıt tüketimi yüksek olabilecek (çok araçlı/filolu, nakliye, inşaat, dağıtım, otobüs vb.) işletmeler "Yüksek"; orta ölçekli "Orta"; yakıt ihtiyacı düşük olanlar "Düşük".
-- "sector": işletmenin kısa Türkçe sektör etiketi.
-- "reason": neden iyi/zayıf bir akaryakıt müşterisi olabileceğine dair TEK kısa cümle (Türkçe).
-- SADECE verilen işletmeler için, verilen id ile cevap ver. Bilgi uydurma.
-
-Cevabı şu JSON şemasıyla ver: {"items":[{"id":"...","potential":"Yüksek|Orta|Düşük","sector":"...","reason":"..."}]}`;
-
-  const compact = raw.map((r) => ({
-    id: r.id,
-    isim: r.name,
-    kategori: r.category || r.profile,
-    adres: r.address,
-  }));
-
-  try {
-    const data = await askGeminiJson<{ items: ScoreItem[] }>(
-      systemPrompt,
-      JSON.stringify({ isletmeler: compact })
-    );
-    for (const it of data.items || []) {
-      if (it && it.id) result.set(it.id, it);
-    }
-  } catch {
-    // puanlama başarısız olursa ham veriyle devam (best-effort)
-  }
-  return result;
 }
 
 export async function POST(req: NextRequest) {
@@ -256,28 +209,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Gemini ile potansiyel puanlama (best-effort).
-    const scores = await scoreLeads(collected);
-
-    const leads: Lead[] = collected.map((c) => {
-      const s = scores.get(c.id);
-      return {
-        ...c,
-        potential: s?.potential || "Orta",
-        sector: s?.sector || c.category || c.profile,
-        reason: s?.reason || "",
-      };
-    });
-
-    // Yüksek potansiyel önce gelsin.
-    const order = { Yüksek: 0, Orta: 1, Düşük: 2 } as const;
-    leads.sort((a, b) => order[a.potential] - order[b.potential]);
+    const leads: Lead[] = collected.map((c) => ({
+      ...c,
+      sector: c.category || c.profile,
+    }));
 
     return NextResponse.json({
       leads,
       count: leads.length,
       region,
-      scored: scores.size > 0,
     });
   } catch (err: unknown) {
     const message =

@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchPlaces, isPlacesConfigured, type PlaceResult } from "@/lib/places";
-import { askGemini, isGeminiConfigured } from "@/lib/gemini";
 import {
   ensureDailyPrices,
   refreshDailyPrices,
   plakaForIl,
-  type FuelType,
 } from "@/lib/fuel-prices";
 
 export const maxDuration = 60;
@@ -125,7 +123,6 @@ export async function GET() {
       prices: priceInfo.rows,
       stations,
       placesConfigured: isPlacesConfigured(),
-      geminiConfigured: isGeminiConfigured(),
       placesError,
     });
   } catch (err: unknown) {
@@ -163,76 +160,7 @@ export async function POST(req: NextRequest) {
         prices: priceInfo.rows,
         stations,
         placesConfigured: isPlacesConfigured(),
-        geminiConfigured: isGeminiConfigured(),
         placesError,
-      });
-    }
-
-    // AI analizi: kendi fiyatın ile çevredeki marka fiyatlarını kıyasla, yorum ver.
-    if (action === "analyze") {
-      if (!isGeminiConfigured()) {
-        return NextResponse.json(
-          {
-            error:
-              "Gemini API anahtarı tanımlı değil. Ayarlar > Yapay Zeka bölümünden anahtarı girin.",
-          },
-          { status: 400 }
-        );
-      }
-      const plaka = plakaForIl(STATION.il) ?? STATION.plaka;
-      const priceInfo = await ensureDailyPrices(plaka, STATION.il, STATION.ilce);
-
-      let stations: Station[] = [];
-      if (isPlacesConfigured()) {
-        try {
-          stations = await findNearbyStations();
-        } catch {
-          stations = [];
-        }
-      }
-
-      // Markalara göre fiyatları derle.
-      const priceByBrand: Record<string, Partial<Record<FuelType, number>>> = {};
-      for (const r of priceInfo.rows) {
-        if (!priceByBrand[r.marka]) priceByBrand[r.marka] = {};
-        priceByBrand[r.marka][r.yakit] = r.fiyat;
-      }
-
-      const nearbyBrands = Array.from(
-        new Set(stations.map((s) => s.brand).filter(Boolean))
-      );
-
-      const systemPrompt = `Sen Sakarya/Serdivan'da bir Petrol Ofisi akaryakıt istasyonunun rekabet analisti uzmanısın. Sana çevredeki rakip istasyonların markaları ve marka bazlı güncel akaryakıt fiyatları (benzin, motorin, lpg) verilecek. Görevin:
-- Bizim istasyonumuz (Petrol Ofisi) ile rakipleri fiyat açısından kıyaslamak.
-- Hangi yakıtta pahalı/ucuz olduğumuzu net belirtmek.
-- Kısa, uygulanabilir bir fiyat/rekabet önerisi vermek.
-Türkçe, kısa ve madde madde yaz. Veride olmayan fiyatı uydurma; eksikse "veri yok" de.`;
-
-      const userText = JSON.stringify({
-        istasyonumuz: "Petrol Ofisi",
-        bolge: `${STATION.ilce} / ${STATION.il}`,
-        tarih: priceInfo.tarih,
-        fiyatKaynagi: priceInfo.source,
-        markaFiyatlari: priceByBrand,
-        cevredekiMarkalar: nearbyBrands,
-        yakinIstasyonlar: stations.slice(0, 15).map((s) => ({
-          ad: s.name,
-          marka: s.brand || "bilinmiyor",
-          mesafeKm: s.distanceKm,
-        })),
-      });
-
-      const analysis = await askGemini(
-        [{ role: "user", text: userText }],
-        systemPrompt
-      );
-
-      return NextResponse.json({
-        analysis,
-        tarih: priceInfo.tarih,
-        priceSource: priceInfo.source,
-        prices: priceInfo.rows,
-        stations,
       });
     }
 
