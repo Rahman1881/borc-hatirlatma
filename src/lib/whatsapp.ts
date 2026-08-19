@@ -13,27 +13,35 @@ interface WAState {
   info: { pushname: string; wid: string } | null;
 }
 
-let client: Client | null = null;
-let state: WAState = {
-  status: "disconnected",
-  qrDataUrl: null,
-  info: null,
-};
+// client ve state, Next.js rota bundle'ları ve hot-reload arasında paylaşılmalı.
+// Modül seviyesi `let` her rota kopyasında ayrı olurdu; bu yüzden tek bir global
+// singleton'da tutuyoruz ki bağlanan rota (/api/whatsapp) ile mesaj gönderen rota
+// (/api/messages) AYNI istemciyi görsün. Aksi halde durum "bağlı" görünürken
+// gönderim rotası client'ı null bulup "WhatsApp bağlı değil" hatası verir.
+type WAStore = { client: Client | null; state: WAState };
+
+const globalForWA = globalThis as unknown as { __waStore?: WAStore };
+const store: WAStore =
+  globalForWA.__waStore ??
+  (globalForWA.__waStore = {
+    client: null,
+    state: { status: "disconnected", qrDataUrl: null, info: null },
+  });
 
 function getSessionPath() {
   return path.join(process.cwd(), ".wwebjs_auth");
 }
 
 export function getWAState(): WAState {
-  return { ...state };
+  return { ...store.state };
 }
 
 export function initWhatsApp(): void {
-  if (client) return;
+  if (store.client) return;
 
-  state = { status: "loading", qrDataUrl: null, info: null };
+  store.state = { status: "loading", qrDataUrl: null, info: null };
 
-  client = new Client({
+  const client = new Client({
     authStrategy: new LocalAuth({ dataPath: getSessionPath() }),
     puppeteer: {
       headless: true,
@@ -45,14 +53,15 @@ export function initWhatsApp(): void {
       ],
     },
   });
+  store.client = client;
 
   // 90 saniye içinde ready/qr gelmezse oturumu sil ve sıfırla
   const loadingTimeout = setTimeout(async () => {
-    if (state.status === "loading") {
+    if (store.state.status === "loading") {
       const sessionPath = getSessionPath();
-      const c = client;
-      client = null;
-      state = { status: "disconnected", qrDataUrl: null, info: null };
+      const c = store.client;
+      store.client = null;
+      store.state = { status: "disconnected", qrDataUrl: null, info: null };
       try { await Promise.race([c?.destroy(), new Promise(r => setTimeout(r, 5000))]); } catch { /* ignore */ }
       try { if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -61,17 +70,17 @@ export function initWhatsApp(): void {
   client.on("qr", async (qr: string) => {
     clearTimeout(loadingTimeout);
     const dataUrl = await QRCode.toDataURL(qr, { width: 300 });
-    state = { status: "qr", qrDataUrl: dataUrl, info: null };
+    store.state = { status: "qr", qrDataUrl: dataUrl, info: null };
   });
 
   client.on("loading_screen", () => {
-    state = { ...state, status: "loading" };
+    store.state = { ...store.state, status: "loading" };
   });
 
   client.on("ready", () => {
     clearTimeout(loadingTimeout);
-    const info = client?.info;
-    state = {
+    const info = client.info;
+    store.state = {
       status: "ready",
       qrDataUrl: null,
       info: info
@@ -81,21 +90,21 @@ export function initWhatsApp(): void {
   });
 
   client.on("authenticated", () => {
-    state = { ...state, status: "loading" };
+    store.state = { ...store.state, status: "loading" };
   });
 
   client.on("auth_failure", () => {
     clearTimeout(loadingTimeout);
-    state = { status: "disconnected", qrDataUrl: null, info: null };
-    client = null;
+    store.state = { status: "disconnected", qrDataUrl: null, info: null };
+    store.client = null;
     // Bozuk oturumu sil
     try { fs.rmSync(getSessionPath(), { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   client.on("disconnected", () => {
     clearTimeout(loadingTimeout);
-    state = { status: "disconnected", qrDataUrl: null, info: null };
-    client = null;
+    store.state = { status: "disconnected", qrDataUrl: null, info: null };
+    store.client = null;
   });
 
   client.initialize();
@@ -105,11 +114,11 @@ export async function disconnectWhatsApp(): Promise<void> {
   const sessionPath = getSessionPath();
 
   // Önce state'i hemen güncelle
-  state = { status: "disconnected", qrDataUrl: null, info: null };
+  store.state = { status: "disconnected", qrDataUrl: null, info: null };
 
-  if (client) {
-    const c = client;
-    client = null;
+  if (store.client) {
+    const c = store.client;
+    store.client = null;
 
     try {
       // destroy() asılı kalabilir, 10 saniye timeout koy
@@ -144,7 +153,8 @@ export async function sendWhatsAppMessage(
   phone: string,
   body: string
 ): Promise<{ success: boolean; error?: string }> {
-  if (!client || state.status !== "ready") {
+  const client = store.client;
+  if (!client || store.state.status !== "ready") {
     return { success: false, error: "WhatsApp bağlı değil. Lütfen önce bağlanın." };
   }
 
