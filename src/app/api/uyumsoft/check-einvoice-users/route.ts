@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
                       isEInvoice: false,
                       via: "none",
                       checked: false,
+                      gibTitle: "",
                     };
                   }
                   write({ type: "result", key: pair.key, routing });

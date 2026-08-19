@@ -321,6 +321,9 @@ async function schedulerTick() {
     if (s.type === "weekly" && s.weekday && s.weekday !== jsWeekday()) continue;
     const lastKey = `telegram_lastsent_${s.id}`;
     if (getSetting(lastKey) === today) continue; // bugün zaten gönderildi
+    // "Gönderildi" damgasını rapor üretilmeden önce bas: rapor üretimi 30 sn'den
+    // uzun sürerse sonraki tick aynı raporu ikinci kez göndermesin.
+    setSetting(lastKey, today);
 
     // type: news = haber bülteni, prices = rakip fiyat, weekly = haftalık,
     // daily = önceki gün satış.
@@ -336,7 +339,6 @@ async function schedulerTick() {
         console.error("[telegram] rapor gönderilemedi:", e?.message || e);
       }
     }
-    setSetting(lastKey, today);
     console.log(`[telegram] '${s.label}' raporu ${chats.length} kişiye gönderildi.`);
   }
 }
@@ -379,18 +381,29 @@ async function main() {
     }
   })();
 
-  // Zamanlayıcı: her 30 saniyede bir kontrol.
+  // Zamanlayıcı: her 30 saniyede bir kontrol. Bir tur bitmeden yenisi başlamaz;
+  // aksi halde yavaş rapor üretiminde aynı rapor iki kez gönderiliyordu.
+  let schedulerBusy = false;
   setInterval(() => {
-    schedulerTick().catch((e) =>
-      console.error("[telegram] zamanlayıcı hatası:", e?.message || e)
-    );
+    if (schedulerBusy) return;
+    schedulerBusy = true;
+    schedulerTick()
+      .catch((e) => console.error("[telegram] zamanlayıcı hatası:", e?.message || e))
+      .finally(() => {
+        schedulerBusy = false;
+      });
   }, 30000);
 
   // Vardiya yoklayıcı: her 30 saniyede bir yeni vardiya dosyası var mı bakar.
+  let shiftBusy = false;
   setInterval(() => {
-    shiftTick().catch((e) =>
-      console.error("[telegram] vardiya yoklayıcı hatası:", e?.message || e)
-    );
+    if (shiftBusy) return;
+    shiftBusy = true;
+    shiftTick()
+      .catch((e) => console.error("[telegram] vardiya yoklayıcı hatası:", e?.message || e))
+      .finally(() => {
+        shiftBusy = false;
+      });
   }, 30000);
 }
 

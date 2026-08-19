@@ -179,10 +179,14 @@ function ensureShiftBaseline(): boolean {
   return true;
 }
 
-function markShiftReported(file: string): void {
-  getDb()
+// Bir vardiya dosyasını "raporlandı" olarak sahiplenir. Gerçekten bu çağrı
+// işaretlediyse true, başkası daha önce işaretlemişse false döner. INSERT OR IGNORE
+// tek adımda çalıştığı için eşzamanlı iki istek aynı dosyayı sahiplenemez.
+function claimShift(file: string): boolean {
+  const info = getDb()
     .prepare("INSERT OR IGNORE INTO telegram_reported_shifts (file) VALUES (?)")
     .run(file);
+  return info.changes === 1;
 }
 
 // Henüz raporlanmamış vardiya dosyaları (eski -> yeni sıralı).
@@ -208,14 +212,14 @@ export async function buildPendingShiftReports(): Promise<
   { file: string; text: string }[]
 > {
   if (ensureShiftBaseline()) return [];
-  const files = listUnreportedShiftFiles();
+  // Dosyalar rapor üretilmeden ÖNCE sahiplenilir. Rapor üretimi await içerdiği ve
+  // ağ diskinden okuma uzun sürebildiği için, eşzamanlı gelen ikinci istek aksi
+  // halde aynı vardiyayı "gönderilmemiş" görüp raporu ikinci kez gönderiyordu.
+  const files = listUnreportedShiftFiles().filter(claimShift);
   const out: { file: string; text: string }[] = [];
   for (const f of files) {
     const r = await buildShiftReport(f);
-    if (r.ok) {
-      markShiftReported(f);
-      out.push({ file: f, text: r.text });
-    }
+    if (r.ok) out.push({ file: f, text: r.text });
   }
   return out;
 }
@@ -225,7 +229,7 @@ export async function buildPendingShiftReports(): Promise<
 // toplu gönderilmez; yalnızca açıldıktan sonra düşenler raporlanır.
 export function skipPendingShifts(): void {
   if (ensureShiftBaseline()) return;
-  for (const f of listUnreportedShiftFiles()) markShiftReported(f);
+  for (const f of listUnreportedShiftFiles()) claimShift(f);
 }
 
 // ---------------------------------------------------------------------------

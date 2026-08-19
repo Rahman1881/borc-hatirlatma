@@ -308,13 +308,26 @@ export function summarizeSales(sales: SaleRecord[]): Aggregation {
   };
 }
 
-// getAllShifts önbelleği: klasör + dosyaların (ad, boyut, mtime) parmak izi
-// değişmediği sürece XML'ler yeniden okunmaz. Dosya eklenir/değişirse otomatik yenilenir.
-let shiftCache: { dir: string; fingerprint: string; shifts: ParsedShift[] } | null = null;
+// getAllShifts önbelleği. VRD klasörü genelde ağ paylaşımı (\\192.168.0.10\J\VRD)
+// olduğu için her stat/read bir ağ gidiş-dönüşüdür. İki kademeli önbellek:
+//   1) dirCheckedAt: klasör en fazla DIR_CHECK_TTL_MS'de bir taranır. Tek sayfa
+//      render'ı getAllShifts'i 10 kez çağırdığı için bu tek başına 10 kat kazandırır.
+//   2) parseCache: dosya bazlı (boyut+mtime anahtarlı) ayrıştırma önbelleği. Yeni
+//      vardiya dosyası düştüğünde tüm arşiv değil, yalnız o dosya yeniden okunur.
+const DIR_CHECK_TTL_MS = 10_000;
+
+let shiftCache: { dir: string; shifts: ParsedShift[]; checkedAt: number } | null = null;
+const parseCache = new Map<string, { key: string; shift: ParsedShift | null }>();
 
 // VRD klasöründeki tüm XML dosyalarını ayrıştırır (yeni -> eski sıralı).
 export function getAllShifts(): ParsedShift[] {
   const dir = getVrdDir();
+  const now = Date.now();
+
+  if (shiftCache && shiftCache.dir === dir && now - shiftCache.checkedAt < DIR_CHECK_TTL_MS) {
+    return shiftCache.shifts;
+  }
+
   let files: string[] = [];
   try {
     files = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".xml"));
@@ -322,39 +335,49 @@ export function getAllShifts(): ParsedShift[] {
     return [];
   }
 
-  // Parmak izi: her dosyanın adı + boyutu + son değişiklik zamanı.
-  const stats = files
-    .map((file) => {
-      try {
-        const st = fs.statSync(path.join(dir, file));
-        return `${file}:${st.size}:${st.mtimeMs}`;
-      } catch {
-        return `${file}:?`;
-      }
-    })
-    .sort();
-  const fingerprint = stats.join("|");
-
-  if (shiftCache && shiftCache.dir === dir && shiftCache.fingerprint === fingerprint) {
-    return shiftCache.shifts;
-  }
+  // Klasör değiştiyse önceki klasörün ayrıştırma önbelleği geçersizdir.
+  if (shiftCache && shiftCache.dir !== dir) parseCache.clear();
 
   const shifts: ParsedShift[] = [];
   for (const file of files) {
+    const full = path.join(dir, file);
+    let key: string;
     try {
-      const xml = fs.readFileSync(path.join(dir, file), "utf8");
-      const parsed = parseVrdXml(xml);
-      if (parsed.sales.length === 0) continue;
-      shifts.push({
-        file,
-        tarih: parsed.tarih,
-        iso: isoFromTarih(parsed.tarih),
-        vardiyaNo: parsed.vardiyaNo,
-        sales: parsed.sales,
-      });
+      const st = fs.statSync(full);
+      key = `${st.size}:${st.mtimeMs}`;
     } catch {
-      // bozuk dosyayı atla
+      continue;
     }
+
+    const cached = parseCache.get(file);
+    if (cached && cached.key === key) {
+      if (cached.shift) shifts.push(cached.shift);
+      continue;
+    }
+
+    let shift: ParsedShift | null = null;
+    try {
+      const parsed = parseVrdXml(fs.readFileSync(full, "utf8"));
+      if (parsed.sales.length > 0) {
+        shift = {
+          file,
+          tarih: parsed.tarih,
+          iso: isoFromTarih(parsed.tarih),
+          vardiyaNo: parsed.vardiyaNo,
+          sales: parsed.sales,
+        };
+      }
+    } catch {
+      // bozuk dosya: null olarak önbelleğe alınır, tekrar tekrar okunmaz
+    }
+    parseCache.set(file, { key, shift });
+    if (shift) shifts.push(shift);
+  }
+
+  // Silinen dosyaların önbellek kayıtlarını at (bellek sınırsız büyümesin).
+  if (parseCache.size > files.length) {
+    const alive = new Set(files);
+    for (const f of parseCache.keys()) if (!alive.has(f)) parseCache.delete(f);
   }
 
   // iso + vardiya no'ya göre sırala, en yeni en üstte.
@@ -363,7 +386,7 @@ export function getAllShifts(): ParsedShift[] {
     return (parseInt(b.vardiyaNo, 10) || 0) - (parseInt(a.vardiyaNo, 10) || 0);
   });
 
-  shiftCache = { dir, fingerprint, shifts };
+  shiftCache = { dir, shifts, checkedAt: now };
   return shifts;
 }
 

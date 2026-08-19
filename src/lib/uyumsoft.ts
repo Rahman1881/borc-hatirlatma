@@ -26,6 +26,9 @@ export interface UyumsoftEInvoiceUserResult {
   ok: boolean;
   registered: boolean;
   message: string;
+  // GİB e-fatura sicilindeki resmi unvan (gerçek kişilerde "AD SOYAD").
+  // Yalnızca kayıtlı mükelleflerde dolu gelir.
+  title: string;
   rawResponse?: string;
 }
 
@@ -35,6 +38,8 @@ export interface EInvoiceRouting {
   isEInvoice: boolean;
   via: "vkn" | "tckn" | "none";
   checked: boolean;
+  // Sorgu sırasında GİB'den okunan resmi unvan; Excel'deki isimden önceliklidir.
+  gibTitle: string;
 }
 
 const DEFAULT_UYUMSOFT_SERVICE_URL =
@@ -56,6 +61,16 @@ export function escapeXml(value: string) {
 function normalizeServiceUrl(serviceUrl: string) {
   const trimmed = serviceUrl.trim();
   return trimmed || DEFAULT_UYUMSOFT_SERVICE_URL;
+}
+
+function unescapeXml(value: string) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&amp;/g, "&");
 }
 
 function getTagAttribute(xml: string, tagName: string, attribute: string) {
@@ -151,6 +166,32 @@ function buildIsEInvoiceUserEnvelope(
       <vknTckn>${escapeXml(vknTckn)}</vknTckn>
       <alias></alias>
     </IsEInvoiceUser>
+  </s:Body>
+</s:Envelope>`;
+}
+
+// GetUserAliasses: GİB e-fatura sicilinde kayıtlı kullanıcının tanımını (unvan,
+// kimlik, tip) ve posta kutusu etiketlerini döndürür. IsEInvoiceUser yalnızca
+// evet/hayır dönerken bu metot resmi unvanı da verdiği için ad/soyad kaynağımızdır.
+function buildGetUserAliassesEnvelope(
+  username: string,
+  password: string,
+  vknTckn: string
+) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:u="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+  <s:Header>
+    <o:Security s:mustUnderstand="1" xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+      <o:UsernameToken u:Id="UsernameToken-1">
+        <o:Username>${escapeXml(username)}</o:Username>
+        <o:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">${escapeXml(password)}</o:Password>
+      </o:UsernameToken>
+    </o:Security>
+  </s:Header>
+  <s:Body>
+    <GetUserAliasses xmlns="http://tempuri.org/">
+      <vknTckn>${escapeXml(vknTckn)}</vknTckn>
+    </GetUserAliasses>
   </s:Body>
 </s:Envelope>`;
 }
@@ -292,15 +333,54 @@ export async function saveUyumsoftDrafts(
   };
 }
 
+// GetUserAliasses ile sorgu: kayıt durumunun yanında GİB'deki resmi unvanı da verir.
+// Kesin sonuç veremezse (servis hatası ya da IsSucceded=false) null döner; çağıran
+// taraf o zaman kanıtlanmış IsEInvoiceUser yoluna düşer.
+async function checkViaUserAliasses(
+  settings: UyumsoftSettings,
+  username: string,
+  password: string,
+  number: string
+): Promise<UyumsoftEInvoiceUserResult | null> {
+  const { ok, rawResponse } = await sendSoapRequest(
+    settings,
+    "http://tempuri.org/IIntegration/GetUserAliasses",
+    buildGetUserAliassesEnvelope(username, password, number)
+  );
+
+  if (!ok || getSoapFault(rawResponse)) return null;
+
+  const succeeded =
+    readResultFlag(rawResponse, "GetUserAliassesResult", "IsSucceded").toLowerCase() ===
+    "true";
+  // Kayıtsız kullanıcıda da IsSucceded=false dönebiliyor; "kayıtlı değil" ile
+  // "sorgu başarısız" ayrımını yapamadığımız için kararı IsEInvoiceUser'a bırakıyoruz.
+  if (!succeeded) return null;
+
+  const identifier = getTagAttribute(rawResponse, "Definition", "Identifier");
+  const title = unescapeXml(getTagAttribute(rawResponse, "Definition", "Title")).trim();
+  const message = readResultFlag(rawResponse, "GetUserAliassesResult", "Message");
+
+  return {
+    ok: true,
+    registered: Boolean(identifier),
+    title,
+    message,
+    rawResponse,
+  };
+}
+
 // Verilen VKN/TCKN'nin GİB e-fatura kayıtlı kullanıcısı olup olmadığını sorgular.
 // E-Fatura mı E-Arşiv mi kararının tek doğru kaynağı budur; profil seçimi değil.
+// Önce GetUserAliasses denenir (resmi unvanı da getirir), sonuç alınamazsa
+// IsEInvoiceUser'a düşülür.
 export async function checkEInvoiceUser(
   settings: UyumsoftSettings,
   vknTckn: string
 ): Promise<UyumsoftEInvoiceUserResult> {
   const number = (vknTckn || "").replace(/\D/g, "");
   if (!/^\d{10,11}$/.test(number)) {
-    return { ok: false, registered: false, message: "Geçersiz VKN/TCKN" };
+    return { ok: false, registered: false, title: "", message: "Geçersiz VKN/TCKN" };
   }
 
   const username = settings.username.trim();
@@ -309,9 +389,13 @@ export async function checkEInvoiceUser(
     return {
       ok: false,
       registered: false,
+      title: "",
       message: "Uyumsoft web servis kullanıcı adı ve şifre bilgisi gerekli",
     };
   }
+
+  const withTitle = await checkViaUserAliasses(settings, username, password, number);
+  if (withTitle) return withTitle;
 
   const { ok, status, rawResponse } = await sendSoapRequest(
     settings,
@@ -324,6 +408,7 @@ export async function checkEInvoiceUser(
     return {
       ok: false,
       registered: false,
+      title: "",
       message: fault || `Uyumsoft mükellef sorgusu başarısız oldu (${status})`,
       rawResponse,
     };
@@ -338,7 +423,7 @@ export async function checkEInvoiceUser(
   // Value alanı varsa onu kullan; yanıt sadece IsSucceded ile dönüyorsa ona düş.
   const registered = succeeded && (valueRaw ? valueRaw.toLowerCase() === "true" : true);
 
-  return { ok: succeeded, registered, message, rawResponse };
+  return { ok: succeeded, registered, title: "", message, rawResponse };
 }
 
 // VKN ve TCKN'nin ikisi de gelebildiği için sırayla sorgular:
@@ -360,20 +445,37 @@ export async function resolveEInvoiceRouting(
   };
 
   let checked = false;
+  let gibTitle = "";
 
   if (/^\d{10}$/.test(vkn)) {
     const result = await lookup(vkn);
     checked = checked || result.ok;
+    if (result.title) gibTitle = result.title;
     if (result.registered) {
-      return { taxNumber: vkn, scheme: "VKN", isEInvoice: true, via: "vkn", checked: true };
+      return {
+        taxNumber: vkn,
+        scheme: "VKN",
+        isEInvoice: true,
+        via: "vkn",
+        checked: true,
+        gibTitle: result.title,
+      };
     }
   }
 
   if (/^\d{11}$/.test(tckn)) {
     const result = await lookup(tckn);
     checked = checked || result.ok;
+    if (result.title) gibTitle = result.title;
     if (result.registered) {
-      return { taxNumber: tckn, scheme: "TCKN", isEInvoice: true, via: "tckn", checked: true };
+      return {
+        taxNumber: tckn,
+        scheme: "TCKN",
+        isEInvoice: true,
+        via: "tckn",
+        checked: true,
+        gibTitle: result.title,
+      };
     }
   }
 
@@ -384,5 +486,6 @@ export async function resolveEInvoiceRouting(
     isEInvoice: false,
     via: "none",
     checked,
+    gibTitle,
   };
 }

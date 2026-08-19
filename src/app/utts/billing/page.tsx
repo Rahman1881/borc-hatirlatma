@@ -24,6 +24,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import type { EInvoiceRouting } from "@/lib/uyumsoft";
+import { splitPersonName } from "@/lib/buyer-name";
 
 type UttsRow = Record<string, unknown>;
 
@@ -294,19 +295,17 @@ function splitBuyerName(row: UttsRow) {
     return { name: buyerName, surname: "" };
   }
 
-  if (explicitSurname || taxNumber.length !== 11) {
+  // Soyad ayrı alanda geldiyse ona dokunma.
+  if (explicitSurname) {
     return { name: buyerName, surname: explicitSurname };
   }
 
-  const parts = buyerName.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) {
-    return { name: buyerName, surname: "" };
+  // Gerçek kişi (TCKN'li ya da şahıs olarak işaretlenmiş): ünvanı ad/soyad ayır.
+  if (buyerType === "person" || taxNumber.length === 11) {
+    return splitPersonName(buyerName);
   }
 
-  return {
-    name: parts.slice(0, -1).join(" "),
-    surname: parts.at(-1) || "",
-  };
+  return { name: buyerName, surname: "" };
 }
 
 // UTTS'in döndürdüğü "companyTypeStr" alanı: "Tüzel Kişilik", "Şahıs Firması"
@@ -746,6 +745,12 @@ export default function UttsBillingPage() {
   const [savingOverride, setSavingOverride] = useState(false);
   const [rows, setRows] = useState<UttsRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, InvoiceBuyerOverride>>({});
+  // Kullanıcının "Düzenle" ile kaydettiği (veritabanında duran) düzeltmeler.
+  // Mükellef sorgusu GİB unvanıyla otomatik düzeltme yaparken bunlara dokunmaz:
+  // öncelik sırası elle düzeltme > GİB unvanı > UTTS/Excel verisi.
+  const [manualOverrideKeys, setManualOverrideKeys] = useState<Set<string>>(
+    new Set()
+  );
   const [mergeByBuyer, setMergeByBuyer] = useState(false);
   const [editingCandidate, setEditingCandidate] =
     useState<InvoiceCandidate | null>(null);
@@ -834,6 +839,7 @@ export default function UttsBillingPage() {
           }
         }
         setOverrides(next);
+        setManualOverrideKeys(new Set(Object.keys(next)));
       })
       .catch(() => {});
   }, []);
@@ -1001,6 +1007,7 @@ export default function UttsBillingPage() {
         ...prev,
         [saved.sourceTaxNumber]: saved,
       }));
+      setManualOverrideKeys((prev) => new Set(prev).add(saved.sourceTaxNumber));
       setRows((prev) =>
         prev.map((row, index) =>
           getCandidateKey(row, index) === editingCandidate.key
@@ -1230,29 +1237,66 @@ export default function UttsBillingPage() {
       //     ve elinde TCKN olanlar — gerçek kişiye E-Arşiv TCKN ile kesilir.
       // (Şahıs + E-Arşiv ama TCKN yoksa VKN ile kalır.) Satırı TCKN'e çevirip
       // gerçek kişi (ad/soyad) olarak işaretliyoruz.
-      const tcknOverrides: Record<string, InvoiceBuyerOverride> = {};
+      const autoOverrides: Record<string, InvoiceBuyerOverride> = {};
+      let tcknCount = 0;
+      let gibNameCount = 0;
+
       for (const candidate of invoiceCandidates) {
         const routing = results[getRoutingKey(candidate.row)];
         if (!routing) continue;
 
+        const sourceTaxNumber = getSourceTaxNumber(candidate.row);
+        // Elle düzeltilmiş alıcıya dokunma.
+        if (manualOverrideKeys.has(sourceTaxNumber)) continue;
+
         const pair = getVknTcknPair(candidate.row);
         const buyerType = getBuyerType(candidate.row);
         const shouldUseTckn =
-          routing.via === "tckn" ||
-          (!routing.isEInvoice && buyerType === "person" && !!pair.tckn);
-        if (!shouldUseTckn || !pair.tckn) continue;
+          (routing.via === "tckn" ||
+            (!routing.isEInvoice && buyerType === "person" && !!pair.tckn)) &&
+          !!pair.tckn;
 
-        const fullName = getBuyerName(candidate.row).trim();
-        const parts = fullName.split(/\s+/).filter(Boolean);
-        const hasSurname = parts.length >= 2;
-        const sourceTaxNumber = getSourceTaxNumber(candidate.row);
+        const currentTaxNumber = getTaxNumber(candidate.row);
+        const targetTaxNumber = shouldUseTckn
+          ? pair.tckn
+          : routing.taxNumber || currentTaxNumber;
+        const targetType: "company" | "person" =
+          shouldUseTckn || buyerType === "person" || targetTaxNumber.length === 11
+            ? "person"
+            : "company";
 
-        tcknOverrides[sourceTaxNumber] = {
+        // İsim kaynağı önceliği: GİB'deki resmi unvan > UTTS/Excel verisi.
+        const excelName = getBuyerName(candidate.row).trim();
+        const sourceName = routing.gibTitle || excelName;
+        const usedGibName = Boolean(routing.gibTitle);
+
+        let buyerName = sourceName;
+        let buyerSurname = "";
+        if (targetType === "person") {
+          const person = splitPersonName(sourceName);
+          buyerName = person.name;
+          buyerSurname = person.surname;
+        }
+
+        // Mevcut duruma göre bir değişiklik yoksa gereksiz düzeltme üretme.
+        const current = splitBuyerName(candidate.row);
+        if (
+          buyerName === current.name &&
+          buyerSurname === current.surname &&
+          targetTaxNumber === currentTaxNumber
+        ) {
+          continue;
+        }
+
+        if (shouldUseTckn) tcknCount += 1;
+        if (usedGibName) gibNameCount += 1;
+
+        autoOverrides[sourceTaxNumber] = {
           sourceTaxNumber,
-          taxNumber: pair.tckn,
-          buyerType: "person",
-          buyerName: hasSurname ? parts.slice(0, -1).join(" ") : fullName,
-          buyerSurname: hasSurname ? parts[parts.length - 1] : "",
+          taxNumber: targetTaxNumber,
+          buyerType: targetType,
+          buyerName,
+          buyerSurname,
           taxOffice: getTaxOffice(candidate.row),
           city: getCity(candidate.row),
           district: getDistrict(candidate.row),
@@ -1261,18 +1305,19 @@ export default function UttsBillingPage() {
           phone: getPhone(candidate.row),
         };
       }
-      if (Object.keys(tcknOverrides).length > 0) {
-        setOverrides((prev) => ({ ...prev, ...tcknOverrides }));
+      if (Object.keys(autoOverrides).length > 0) {
+        setOverrides((prev) => ({ ...prev, ...autoOverrides }));
       }
 
       const eInvoiceCount = Object.values(results).filter(
         (routing) => routing.isEInvoice
       ).length;
-      const tcknCount = Object.keys(tcknOverrides).length;
       toast.success(
         `${Object.keys(results).length} alıcı sorgulandı: ${eInvoiceCount} E-Fatura, ${
           Object.keys(results).length - eInvoiceCount
-        } E-Arşiv${tcknCount > 0 ? ` (${tcknCount} tüzel kişi TCKN'e çevrildi)` : ""}`
+        } E-Arşiv${tcknCount > 0 ? ` (${tcknCount} kayıt TCKN'e çevrildi)` : ""}${
+          gibNameCount > 0 ? ` (${gibNameCount} isim GİB'den düzeltildi)` : ""
+        }`
       );
     } catch {
       toast.error("Mükellef sorgusu sırasında hata oluştu");

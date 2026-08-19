@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { splitPersonName } from "@/lib/buyer-name";
 import getDb from "@/lib/db";
 import {
   escapeXml,
@@ -143,19 +144,17 @@ function splitBuyerName(row: UttsRow) {
     return { name: buyerName, surname: "" };
   }
 
-  if (explicitSurname || taxNumber.length !== 11) {
+  // Soyad ayrı alanda geldiyse (elle düzeltme ya da GİB unvanından ayrıştırma)
+  // ona dokunma.
+  if (explicitSurname) {
     return { name: buyerName, surname: explicitSurname };
   }
 
-  const parts = buyerName.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) {
-    return { name: buyerName, surname: "" };
+  if (buyerType === "person" || taxNumber.length === 11) {
+    return splitPersonName(buyerName);
   }
 
-  return {
-    name: parts.slice(0, -1).join(" "),
-    surname: parts.at(-1) || "",
-  };
+  return { name: buyerName, surname: "" };
 }
 
 function getEmail(row: UttsRow) {
@@ -338,7 +337,7 @@ function buildPartyXml(input: {
             isPerson
               ? `<cac:Person>
             <cbc:FirstName>${escapeXml(safeTitle)}</cbc:FirstName>
-            <cbc:FamilyName>${escapeXml(safeSurname || safeTitle)}</cbc:FamilyName>
+            <cbc:FamilyName>${escapeXml(safeSurname || splitPersonName(safeTitle).surname || safeTitle)}</cbc:FamilyName>
           </cac:Person>`
               : ""
           }
