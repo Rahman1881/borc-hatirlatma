@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import Sidebar from "@/components/sidebar";
 import UttsSidebar from "@/components/utts-sidebar";
 import AiSidebar from "@/components/ai/ai-sidebar";
+import AnalitikSidebar from "@/components/analitik-sidebar";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -18,10 +19,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const isUttsPanel = pathname.startsWith("/utts");
   const isAiPanel = pathname.startsWith("/ai");
+  const isAnalitikPanel = pathname.startsWith("/analitik");
 
   return (
     <div className="flex h-screen">
-      {isAiPanel ? <AiSidebar /> : isUttsPanel ? <UttsSidebar /> : <Sidebar />}
+      {isAnalitikPanel ? (
+        <AnalitikSidebar />
+      ) : isAiPanel ? (
+        <AiSidebar />
+      ) : isUttsPanel ? (
+        <UttsSidebar />
+      ) : (
+        <Sidebar />
+      )}
       <main className="flex-1 overflow-auto bg-muted/30">
         <div className="p-6">{children}</div>
       </main>

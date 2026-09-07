@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Fuel, RadioTower, Sparkles } from "lucide-react";
+import { ArrowRight, Fuel, RadioTower, Sparkles, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,13 @@ const modules = [
     description:
       "Yapay zeka ile satış analizi, doğal dilde soru-cevap, müşteri bulucu ve günlük Telegram raporları.",
     icon: Sparkles,
+  },
+  {
+    href: "/analitik",
+    title: "Müşteri Analitiği",
+    description:
+      "Peşin müşterilerin plaka bazlı ziyaret sıklığı, RFM segmentleri ve iskonto/zarar analizi.",
+    icon: Users,
   },
 ];
 
