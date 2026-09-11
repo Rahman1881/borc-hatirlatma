@@ -215,6 +215,12 @@ export default function SettingsPage() {
                     WhatsApp&apos;a bağlanılıyor...
                   </p>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  QR kod bir dakika içinde gelmezse aşağıdan sıfırlayıp tekrar bağlanın.
+                </p>
+                <Button variant="outline" onClick={handleDisconnect}>
+                  Sıfırla
+                </Button>
               </div>
             )}
 

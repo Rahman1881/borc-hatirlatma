@@ -18,7 +18,15 @@ interface WAState {
 // singleton'da tutuyoruz ki bağlanan rota (/api/whatsapp) ile mesaj gönderen rota
 // (/api/messages) AYNI istemciyi görsün. Aksi halde durum "bağlı" görünürken
 // gönderim rotası client'ı null bulup "WhatsApp bağlı değil" hatası verir.
-type WAStore = { client: Client | null; state: WAState };
+type WAStore = {
+  client: Client | null;
+  state: WAState;
+  // "loading" zaman aşımı sayacı; yeniden başlatınca eskisini iptal edebilmek için
+  // global store'da tutulur (modül seviyesi `let` hot-reload'da çoğalırdı).
+  loadingTimer: ReturnType<typeof setTimeout> | null;
+  // Mevcut "loading" ne zaman başladı; taze bir denemeyi askıda kalmıştan ayırır.
+  loadingStartedAt: number;
+};
 
 const globalForWA = globalThis as unknown as { __waStore?: WAStore };
 const store: WAStore =
@@ -26,6 +34,8 @@ const store: WAStore =
   (globalForWA.__waStore = {
     client: null,
     state: { status: "disconnected", qrDataUrl: null, info: null },
+    loadingTimer: null,
+    loadingStartedAt: 0,
   });
 
 function getSessionPath() {
@@ -36,10 +46,62 @@ export function getWAState(): WAState {
   return { ...store.state };
 }
 
-export function initWhatsApp(): void {
-  if (store.client) return;
+// whatsapp-web.js, arkadaki Chrome sayfası ölse bile durumu "ready" bırakabiliyor.
+// Gerçek canlılık ölçütü Puppeteer sayfasının hâlâ açık olması.
+function isSessionAlive(): boolean {
+  const client = store.client;
+  if (!client || store.state.status !== "ready") return false;
+  const page = client.pupPage;
+  if (!page) return false;
+  try {
+    return !page.isClosed();
+  } catch {
+    return false;
+  }
+}
+
+// Mevcut client'ı (varsa) güvenle kapatır ve store'u temizler. destroy() askıda
+// kalabildiği için timeout ile yarıştırılır. deleteSession=true ise diskteki
+// (bozuk olabilecek) oturum dosyaları da silinir ki sonraki bağlanma taze QR üretsin.
+async function teardownClient(deleteSession = false): Promise<void> {
+  if (store.loadingTimer) {
+    clearTimeout(store.loadingTimer);
+    store.loadingTimer = null;
+  }
+  const c = store.client;
+  store.client = null;
+  if (c) {
+    try {
+      await Promise.race([c.destroy(), new Promise((r) => setTimeout(r, 8000))]);
+    } catch {
+      /* destroy hatası önemsiz */
+    }
+  }
+  if (deleteSession) {
+    try {
+      const sessionPath = getSessionPath();
+      if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+    } catch {
+      /* dosya silme hatası önemsiz */
+    }
+  }
+}
+
+export async function initWhatsApp(): Promise<void> {
+  // Zaten sağlıklı bir durum varsa dokunma:
+  if (store.client) {
+    // Aktif QR bekleniyor — kullanıcı okutmak üzere.
+    if (store.state.status === "qr") return;
+    // Bağlı ve arkadaki sayfa hâlâ canlı.
+    if (store.state.status === "ready" && isSessionAlive()) return;
+    // Yeni başlamış bir "loading" (15 sn içinde) — çalışmasına izin ver.
+    if (store.state.status === "loading" && Date.now() - store.loadingStartedAt < 15000) return;
+    // Aksi halde: zombi / askıda kalmış client. Temizleyip taze başlıyoruz.
+    await teardownClient();
+  }
 
   store.state = { status: "loading", qrDataUrl: null, info: null };
+  store.loadingStartedAt = Date.now();
 
   const client = new Client({
     authStrategy: new LocalAuth({ dataPath: getSessionPath() }),
@@ -55,90 +117,79 @@ export function initWhatsApp(): void {
   });
   store.client = client;
 
-  // 90 saniye içinde ready/qr gelmezse oturumu sil ve sıfırla
-  const loadingTimeout = setTimeout(async () => {
-    if (store.state.status === "loading") {
-      const sessionPath = getSessionPath();
-      const c = store.client;
-      store.client = null;
+  // Bu client hâlâ güncel mi? Eski bir client'ın geç gelen olayları taze client'ı
+  // ezmesin diye her dinleyicide kontrol edilir.
+  const isCurrent = () => store.client === client;
+
+  // 90 saniye içinde ready/qr gelmezse oturumu sil ve sıfırla.
+  store.loadingTimer = setTimeout(async () => {
+    if (isCurrent() && store.state.status === "loading") {
+      await teardownClient(true);
       store.state = { status: "disconnected", qrDataUrl: null, info: null };
-      try { await Promise.race([c?.destroy(), new Promise(r => setTimeout(r, 5000))]); } catch { /* ignore */ }
-      try { if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }, 90000);
 
   client.on("qr", async (qr: string) => {
-    clearTimeout(loadingTimeout);
+    if (!isCurrent()) return;
+    if (store.loadingTimer) {
+      clearTimeout(store.loadingTimer);
+      store.loadingTimer = null;
+    }
     const dataUrl = await QRCode.toDataURL(qr, { width: 300 });
+    if (!isCurrent()) return;
     store.state = { status: "qr", qrDataUrl: dataUrl, info: null };
   });
 
   client.on("loading_screen", () => {
+    if (!isCurrent()) return;
     store.state = { ...store.state, status: "loading" };
   });
 
   client.on("ready", () => {
-    clearTimeout(loadingTimeout);
+    if (!isCurrent()) return;
+    if (store.loadingTimer) {
+      clearTimeout(store.loadingTimer);
+      store.loadingTimer = null;
+    }
     const info = client.info;
     store.state = {
       status: "ready",
       qrDataUrl: null,
-      info: info
-        ? { pushname: info.pushname, wid: info.wid._serialized }
-        : null,
+      info: info ? { pushname: info.pushname, wid: info.wid._serialized } : null,
     };
   });
 
   client.on("authenticated", () => {
+    if (!isCurrent()) return;
     store.state = { ...store.state, status: "loading" };
   });
 
-  client.on("auth_failure", () => {
-    clearTimeout(loadingTimeout);
+  client.on("auth_failure", async () => {
+    if (!isCurrent()) return;
+    await teardownClient(true); // bozuk oturumu sil
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
-    store.client = null;
-    // Bozuk oturumu sil
-    try { fs.rmSync(getSessionPath(), { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  client.on("disconnected", () => {
-    clearTimeout(loadingTimeout);
+  client.on("disconnected", async () => {
+    if (!isCurrent()) return;
+    await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
-    store.client = null;
   });
 
-  client.initialize();
+  // initialize() kendisi reddedebilir (bozuk oturum, Chrome açılmaması vb.);
+  // yakalanmazsa durum sonsuza dek "loading"de asılı kalırdı.
+  client.initialize().catch(async () => {
+    if (!isCurrent()) return;
+    await teardownClient(true);
+    store.state = { status: "disconnected", qrDataUrl: null, info: null };
+  });
 }
 
 export async function disconnectWhatsApp(): Promise<void> {
-  const sessionPath = getSessionPath();
-
-  // Önce state'i hemen güncelle
+  // Önce state'i hemen güncelle ki panel anında "Bağlı Değil" göstersin.
   store.state = { status: "disconnected", qrDataUrl: null, info: null };
-
-  if (store.client) {
-    const c = store.client;
-    store.client = null;
-
-    try {
-      // destroy() asılı kalabilir, 10 saniye timeout koy
-      await Promise.race([
-        c.destroy(),
-        new Promise((resolve) => setTimeout(resolve, 10000)),
-      ]);
-    } catch {
-      // destroy hatası önemsiz
-    }
-  }
-
-  // Oturum dosyalarını sil - tekrar bağlanınca yeni QR çıksın
-  try {
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-    }
-  } catch {
-    // dosya silme hatası önemsiz
-  }
+  // Client'ı kapat + oturum dosyalarını sil (tekrar bağlanınca yeni QR çıksın).
+  await teardownClient(true);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -149,13 +200,50 @@ function randomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+const DISCONNECTED_MESSAGE =
+  "WhatsApp bağlantısı koptu. Ayarlar'dan yeniden bağlanın.";
+
+// Oturumun öldüğünü anladığımızda durumu düşürüyoruz ki panel "Bağlı" göstermeye
+// devam etmesin ve kullanıcı yeniden bağlanabilsin.
+function markSessionDead(): void {
+  store.state = { status: "disconnected", qrDataUrl: null, info: null };
+  store.client = null;
+}
+
+// Oturum tamamen koptuğunda dönen hatalar. Bunlar tek bir numaraya özgü
+// değildir; listenin kalanını denemek aynı hatayı tekrarlamaktan ibaret olur.
+const DEAD_SESSION_PATTERNS = [
+  "reading 'evaluate'",
+  "session closed",
+  "target closed",
+  "protocol error",
+  "execution context was destroyed",
+  "browser has disconnected",
+  "page has been closed",
+];
+
+function isDeadSessionError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return DEAD_SESSION_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
 export async function sendWhatsAppMessage(
   phone: string,
   body: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; disconnected?: boolean }> {
   const client = store.client;
   if (!client || store.state.status !== "ready") {
-    return { success: false, error: "WhatsApp bağlı değil. Lütfen önce bağlanın." };
+    return {
+      success: false,
+      error: "WhatsApp bağlı değil. Lütfen önce bağlanın.",
+      disconnected: true,
+    };
+  }
+
+  // Göndermeden önce oturumun gerçekten yaşadığını doğrula.
+  if (!isSessionAlive()) {
+    markSessionDead();
+    return { success: false, error: DISCONNECTED_MESSAGE, disconnected: true };
   }
 
   try {
@@ -180,6 +268,11 @@ export async function sendWhatsAppMessage(
     return { success: true };
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : "Bilinmeyen hata";
+    // Oturum çöktüyse ham Puppeteer hatasını göstermek yerine ne olduğunu söyle.
+    if (isDeadSessionError(error) || !isSessionAlive()) {
+      markSessionDead();
+      return { success: false, error: DISCONNECTED_MESSAGE, disconnected: true };
+    }
     return { success: false, error };
   }
 }
@@ -216,6 +309,25 @@ export async function sendBulkMessages(
       index: i + 1,
       total: messages.length,
     });
+
+    // Bağlantı koptuysa kalanları denemek aynı hatayı yüzlerce kez tekrarlamaktan
+    // ibaret. Kalanları "gönderilmedi" diye kaydedip çıkıyoruz; böylece geçmiş
+    // kaydı kimin gerçekten denendiğini, kimin hiç denenmediğini doğru gösterir.
+    if (result.disconnected) {
+      for (let j = i + 1; j < messages.length; j++) {
+        const skipped = messages[j];
+        failed++;
+        onProgress?.({
+          customerId: skipped.customerId,
+          customerName: skipped.customerName,
+          status: "failed",
+          error: "Bağlantı koptuğu için gönderilmedi",
+          index: j + 1,
+          total: messages.length,
+        });
+      }
+      break;
+    }
 
     // Random delay between 8-15 seconds to avoid ban
     if (i < messages.length - 1) {

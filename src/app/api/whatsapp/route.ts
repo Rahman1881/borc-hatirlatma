@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   const { action } = await req.json();
 
   if (action === "connect") {
-    initWhatsApp();
+    await initWhatsApp();
     return NextResponse.json({ success: true, message: "Bağlantı başlatılıyor..." });
   }
 
