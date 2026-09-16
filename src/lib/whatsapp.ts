@@ -67,7 +67,8 @@ function killOrphanBrowsers(): Promise<void> {
     };
 
     if (process.platform === "win32") {
-      // PowerShell tek tırnak içinde kaçış: ' -> ''
+      // Komut içinde YALNIZCA tek tırnak kullanıyoruz: Node, Windows'ta argümanları
+      // kaçırırken iç içe çift tırnakları bozabiliyor. PowerShell tek tırnak kaçışı: ' -> ''
       const needle = sessionPath.replace(/'/g, "''");
       execFile(
         "powershell.exe",
@@ -75,8 +76,8 @@ function killOrphanBrowsers(): Promise<void> {
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | ` +
-            `Where-Object { $_.CommandLine -like '*${needle}*' } | ` +
+          `Get-CimInstance Win32_Process | ` +
+            `Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*${needle}*' } | ` +
             `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
         ],
         finish
