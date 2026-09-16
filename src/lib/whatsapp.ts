@@ -1,6 +1,7 @@
 import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 import path from "path";
 import fs from "fs";
+import { execFile } from "child_process";
 import QRCode from "qrcode";
 
 const LOGO_PATH = path.join(process.cwd(), "data", "logo-sirket.png");
@@ -26,6 +27,8 @@ type WAStore = {
   loadingTimer: ReturnType<typeof setTimeout> | null;
   // Mevcut "loading" ne zaman başladı; taze bir denemeyi askıda kalmıştan ayırır.
   loadingStartedAt: number;
+  // Süren bir başlatma varsa onun sözü; eşzamanlı "Bağlan" isteklerini teke indirir.
+  initializing: Promise<void> | null;
 };
 
 const globalForWA = globalThis as unknown as { __waStore?: WAStore };
@@ -36,10 +39,66 @@ const store: WAStore =
     state: { status: "disconnected", qrDataUrl: null, info: null },
     loadingTimer: null,
     loadingStartedAt: 0,
+    initializing: null,
   });
 
 function getSessionPath() {
   return path.join(process.cwd(), ".wwebjs_auth");
+}
+
+// Node süreci çökerek yeniden başladığında (sunucu-baslat.bat döngüsü) Puppeteer'ın
+// açtığı Chrome öksüz kalabiliyor ve oturum klasörünü kilitli tutuyor. Yeni süreç
+// aynı userDataDir ile açmaya çalışınca Chrome
+//   "The browser is already running for ... Use a different `userDataDir`"
+// diyip reddediyor ve bağlantı bir daha asla kurulamıyor. Bu yüzden taze başlamadan
+// önce SADECE bizim oturum klasörümüzü kullanan Chrome süreçlerini kapatıyoruz —
+// komut satırında bu yol geçmeyen (kullanıcının kendi) Chrome'una dokunulmaz.
+function killOrphanBrowsers(): Promise<void> {
+  const sessionPath = getSessionPath();
+
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    // Öldürme başarısız olsa bile bağlanmayı denemeye devam ederiz; bu yüzden
+    // hata yollarının hepsi resolve() ile biter.
+    const timer = setTimeout(done, 10000);
+    const finish = () => {
+      clearTimeout(timer);
+      done();
+    };
+
+    if (process.platform === "win32") {
+      // PowerShell tek tırnak içinde kaçış: ' -> ''
+      const needle = sessionPath.replace(/'/g, "''");
+      execFile(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | ` +
+            `Where-Object { $_.CommandLine -like '*${needle}*' } | ` +
+            `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+        ],
+        finish
+      );
+    } else {
+      execFile("pkill", ["-f", sessionPath], finish);
+    }
+  });
+}
+
+// Chrome, profil klasöründe "Singleton*" kilit dosyaları bırakır. Süreç düzgün
+// kapanmadıysa bunlar kalır ve yeni Chrome açılışını engeller. Öksüz süreçleri
+// kapattıktan sonra artan kilitleri de temizliyoruz.
+function clearBrowserLocks(): void {
+  const dir = path.join(getSessionPath(), "session");
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+    try {
+      fs.rmSync(path.join(dir, name), { force: true });
+    } catch {
+      /* kilit yoksa/silinemezse önemsiz */
+    }
+  }
 }
 
 export function getWAState(): WAState {
@@ -87,7 +146,19 @@ async function teardownClient(deleteSession = false): Promise<void> {
   }
 }
 
-export async function initWhatsApp(): Promise<void> {
+// Eşzamanlı çağrıları tek bir başlatmaya indirger. Aksi halde kullanıcı "Bağlan"a
+// iki kez basınca teardown'ın await'i sırasında ikinci istek içeri sızıyor, iki
+// Chrome birden açılıyor ve sahipsiz kalan oturum klasörünü kilitliyor.
+export function initWhatsApp(): Promise<void> {
+  if (store.initializing) return store.initializing;
+  const run = startWhatsApp().finally(() => {
+    if (store.initializing === run) store.initializing = null;
+  });
+  store.initializing = run;
+  return run;
+}
+
+async function startWhatsApp(): Promise<void> {
   // Zaten sağlıklı bir durum varsa dokunma:
   if (store.client) {
     // Aktif QR bekleniyor — kullanıcı okutmak üzere.
@@ -102,6 +173,10 @@ export async function initWhatsApp(): Promise<void> {
 
   store.state = { status: "loading", qrDataUrl: null, info: null };
   store.loadingStartedAt = Date.now();
+
+  // Önceki süreçten kalmış, oturum klasörünü kilitleyen Chrome'ları temizle.
+  await killOrphanBrowsers();
+  clearBrowserLocks();
 
   const client = new Client({
     authStrategy: new LocalAuth({ dataPath: getSessionPath() }),
@@ -176,11 +251,14 @@ export async function initWhatsApp(): Promise<void> {
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
   });
 
-  // initialize() kendisi reddedebilir (bozuk oturum, Chrome açılmaması vb.);
-  // yakalanmazsa durum sonsuza dek "loading"de asılı kalırdı.
+  // initialize() kendisi reddedebilir (Chrome açılamaması, kilitli profil vb.);
+  // yakalanmazsa durum sonsuza dek "loading"de asılı kalır ve konsolu
+  // unhandledRejection ile doldururdu. Oturumu SİLMİYORUZ: hata çoğunlukla
+  // kilitten kaynaklanır ve oturumu silmek kullanıcıya boş yere QR okutturur.
+  // Gerçekten bozuk oturumu auth_failure ve 90 sn zaman aşımı zaten temizliyor.
   client.initialize().catch(async () => {
     if (!isCurrent()) return;
-    await teardownClient(true);
+    await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
   });
 }
@@ -204,10 +282,13 @@ const DISCONNECTED_MESSAGE =
   "WhatsApp bağlantısı koptu. Ayarlar'dan yeniden bağlanın.";
 
 // Oturumun öldüğünü anladığımızda durumu düşürüyoruz ki panel "Bağlı" göstermeye
-// devam etmesin ve kullanıcı yeniden bağlanabilsin.
-function markSessionDead(): void {
+// devam etmesin ve kullanıcı yeniden bağlanabilsin. Client'ı sadece null'lamak
+// yetmez: arkadaki Chrome süreci yaşamaya devam edip oturum klasörünü kilitler ve
+// sonraki bağlanma "browser is already running" ile patlar. Bu yüzden teardown şart.
+// Oturum dosyaları silinmez — kimlik bilgileri sağlam, sadece tarayıcı öldü.
+async function markSessionDead(): Promise<void> {
+  await teardownClient();
   store.state = { status: "disconnected", qrDataUrl: null, info: null };
-  store.client = null;
 }
 
 // Oturum tamamen koptuğunda dönen hatalar. Bunlar tek bir numaraya özgü
@@ -242,7 +323,7 @@ export async function sendWhatsAppMessage(
 
   // Göndermeden önce oturumun gerçekten yaşadığını doğrula.
   if (!isSessionAlive()) {
-    markSessionDead();
+    await markSessionDead();
     return { success: false, error: DISCONNECTED_MESSAGE, disconnected: true };
   }
 
@@ -270,7 +351,7 @@ export async function sendWhatsAppMessage(
     const error = err instanceof Error ? err.message : "Bilinmeyen hata";
     // Oturum çöktüyse ham Puppeteer hatasını göstermek yerine ne olduğunu söyle.
     if (isDeadSessionError(error) || !isSessionAlive()) {
-      markSessionDead();
+      await markSessionDead();
       return { success: false, error: DISCONNECTED_MESSAGE, disconnected: true };
     }
     return { success: false, error };
