@@ -31,7 +31,10 @@ type WAStore = {
   initializing: Promise<void> | null;
 };
 
-const globalForWA = globalThis as unknown as { __waStore?: WAStore };
+const globalForWA = globalThis as unknown as {
+  __waStore?: WAStore;
+  __waRejectionGuard?: boolean;
+};
 const store: WAStore =
   globalForWA.__waStore ??
   (globalForWA.__waStore = {
@@ -160,6 +163,8 @@ export function initWhatsApp(): Promise<void> {
 }
 
 async function startWhatsApp(): Promise<void> {
+  installRejectionGuard();
+
   // Zaten sağlıklı bir durum varsa dokunma:
   if (store.client) {
     // Aktif QR bekleniyor — kullanıcı okutmak üzere.
@@ -302,11 +307,36 @@ const DEAD_SESSION_PATTERNS = [
   "execution context was destroyed",
   "browser has disconnected",
   "page has been closed",
+  "detached frame",
+  "frame was detached",
+  "frame got detached",
 ];
 
 function isDeadSessionError(message: string): boolean {
   const lower = message.toLowerCase();
   return DEAD_SESSION_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+// whatsapp-web.js kendi iç zamanlayıcılarında Puppeteer çağrıları yapıyor. WhatsApp
+// Web sayfası kendini yenilediğinde bu çağrılar "Attempted to use detached Frame"
+// gibi hatalarla reddediliyor ve kütüphane bunları hiçbir yerde yakalamıyor. Node'un
+// varsayılan davranışı unhandledRejection'da süreci öldürmek; bu da sunucu-baslat.bat
+// döngüsünü tetikliyor, geride oturum klasörünü kilitleyen öksüz Chrome bırakıyor ve
+// uygulama sürekli çöküyor. Bu yüzden SADECE tarayıcı/oturum kaynaklı reddetmeleri
+// yutuyoruz; alakasız hatalar eskisi gibi yükselmeye devam etsin.
+function installRejectionGuard(): void {
+  if (globalForWA.__waRejectionGuard) return;
+  globalForWA.__waRejectionGuard = true;
+
+  process.on("unhandledRejection", (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (!isDeadSessionError(message)) throw reason;
+
+    console.error("[whatsapp] tarayıcı hatası yutuldu:", message);
+    // Sayfa gerçekten öldüyse durumu düşür ki panel "Bağlı" göstermeye devam etmesin.
+    // Hata geçiciyse (sayfa yenilenmesi vb.) oturuma dokunmuyoruz.
+    if (store.state.status === "ready" && !isSessionAlive()) void markSessionDead();
+  });
 }
 
 export async function sendWhatsAppMessage(
