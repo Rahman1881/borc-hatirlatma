@@ -264,6 +264,9 @@ async function startWhatsApp(): Promise<void> {
   await killOrphanBrowsers();
   clearBrowserLocks();
 
+  // Kayıtlı oturumla açılıyorsak QR gelmesi beklenmez; gelirse nedenini loglarız.
+  let restoring = hasSavedSession();
+
   const client = new Client({
     authStrategy: new LocalAuth({ dataPath: getSessionPath() }),
     puppeteer: {
@@ -282,16 +285,25 @@ async function startWhatsApp(): Promise<void> {
   // ezmesin diye her dinleyicide kontrol edilir.
   const isCurrent = () => store.client === client;
 
-  // 90 saniye içinde ready/qr gelmezse oturumu sil ve sıfırla.
+  // 3 dakika içinde ne QR ne de giriş gelmezse bu deneme askıda kalmıştır: kapatıp
+  // yeniden deneriz. Oturumu ASLA otomatik silmiyoruz — eskiden 90 sn'de siliyorduk
+  // ve yavaş açılışlarda geçerli oturum gidiyor, telefonda "bağlı" görünürken QR
+  // isteniyordu. Oturum gerçekten bozuksa WhatsApp zaten QR gösterir; silmeyi
+  // yalnızca WhatsApp'ın açık reddi (auth_failure) ve kullanıcının "Sıfırla"sı yapar.
   store.loadingTimer = setTimeout(async () => {
+    store.loadingTimer = null;
     if (isCurrent() && store.state.status === "loading") {
-      await teardownClient(true);
-      store.state = { status: "disconnected", qrDataUrl: null, info: null };
+      console.error("[whatsapp] açılış 3 dakikada tamamlanmadı, yeniden denenecek");
+      await markSessionDead();
     }
-  }, 90000);
+  }, 180000);
 
   client.on("qr", async (qr: string) => {
     if (!isCurrent()) return;
+    if (restoring) {
+      restoring = false;
+      console.error("[whatsapp] kayıtlı oturum WhatsApp tarafından kabul edilmedi, QR istendi");
+    }
     if (store.loadingTimer) {
       clearTimeout(store.loadingTimer);
       store.loadingTimer = null;
@@ -324,9 +336,8 @@ async function startWhatsApp(): Promise<void> {
   client.on("authenticated", () => {
     if (!isCurrent()) return;
     store.state = { ...store.state, status: "loading" };
-    // Kimlik doğrulandı: oturum SAĞLAM. 90 sn sayacı oturumu silerdi; oysa yavaş
-    // makinede sohbetlerin yüklenmesi bundan uzun sürebiliyor ve geçerli oturumu
-    // silmek boş yere QR okutturuyordu. Yerine daha uzun, oturumu silmeyen bir sayaç.
+    // Kimlik doğrulandı: oturum sağlam. Sohbetlerin yüklenmesi için sayacı baştan
+    // başlatırız (yavaş makinede bu aşama tek başına dakikalar sürebiliyor).
     if (store.loadingTimer) clearTimeout(store.loadingTimer);
     store.loadingTimer = setTimeout(() => {
       store.loadingTimer = null;
@@ -334,14 +345,16 @@ async function startWhatsApp(): Promise<void> {
     }, 180000);
   });
 
-  client.on("auth_failure", async () => {
+  client.on("auth_failure", async (message) => {
     if (!isCurrent()) return;
+    console.error("[whatsapp] kimlik doğrulama reddedildi, oturum siliniyor:", message);
     await teardownClient(true); // bozuk oturumu sil
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
   });
 
   client.on("disconnected", async (reason) => {
     if (!isCurrent()) return;
+    console.error("[whatsapp] bağlantı kesildi, neden:", reason);
     await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
     // Telefondan çıkış yapıldıysa (LOGOUT) yeniden QR gerekir; kendiliğinden
@@ -353,9 +366,10 @@ async function startWhatsApp(): Promise<void> {
   // yakalanmazsa durum sonsuza dek "loading"de asılı kalır ve konsolu
   // unhandledRejection ile doldururdu. Oturumu SİLMİYORUZ: hata çoğunlukla
   // kilitten kaynaklanır ve oturumu silmek kullanıcıya boş yere QR okutturur.
-  // Gerçekten bozuk oturumu auth_failure ve 90 sn zaman aşımı zaten temizliyor.
-  client.initialize().catch(async () => {
+  // Gerçekten bozuk oturumda WhatsApp QR ister ya da auth_failure verir.
+  client.initialize().catch(async (err) => {
     if (!isCurrent()) return;
+    console.error("[whatsapp] başlatılamadı:", err instanceof Error ? err.message : err);
     await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
     scheduleReconnect();
