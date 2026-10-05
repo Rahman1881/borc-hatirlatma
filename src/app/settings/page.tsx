@@ -216,7 +216,9 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  QR kod bir dakika içinde gelmezse aşağıdan sıfırlayıp tekrar bağlanın.
+                  Kayıtlı oturum açılıyorsa birkaç dakika sürebilir, bekleyin. Sıfırla oturumu
+                  siler ve QR&apos;ı yeniden okutmanız gerekir; yalnızca uzun süre takılı
+                  kalırsa kullanın.
                 </p>
                 <Button variant="outline" onClick={handleDisconnect}>
                   Sıfırla

@@ -29,6 +29,11 @@ type WAStore = {
   loadingStartedAt: number;
   // Süren bir başlatma varsa onun sözü; eşzamanlı "Bağlan" isteklerini teke indirir.
   initializing: Promise<void> | null;
+  // Beklenmedik kopmadan sonra kayıtlı oturumla otomatik yeniden bağlanma.
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectAttempts: number;
+  // Tarayıcı hatasından sonra oturumun toparlanıp toparlanmadığını kontrol eden sayaç.
+  healthTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const globalForWA = globalThis as unknown as {
@@ -43,6 +48,9 @@ const store: WAStore =
     loadingTimer: null,
     loadingStartedAt: 0,
     initializing: null,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    healthTimer: null,
   });
 
 function getSessionPath() {
@@ -123,6 +131,71 @@ function isSessionAlive(): boolean {
   }
 }
 
+// Sayfanın açık olması yetmez: WhatsApp Web kendini yenilediğinde sayfa açık kalır
+// ama kütüphanenin enjekte ettiği `window.Store` bir süre (bazen kalıcı olarak) yok
+// olur. Bu durumda panel "Bağlı" der ama hiçbir mesaj gitmez. Gerçek ölçüt WhatsApp'ın
+// kendi bağlantı durumunun CONNECTED olması. Yenileme sürerken geçici olarak null
+// dönebildiği için `waitMs` boyunca birkaç kez yeniden bakarız.
+async function isSessionHealthy(client: Client, waitMs: number): Promise<boolean> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    if (store.client !== client || !isSessionAlive()) return false;
+    try {
+      const state = await Promise.race([
+        client.getState(),
+        new Promise<null>((r) => setTimeout(() => r(null), 10000)),
+      ]);
+      if (String(state) === "CONNECTED") return true;
+    } catch {
+      /* yenileme sırasında evaluate hata verebilir; tekrar deneriz */
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+// LocalAuth, oturumu `.wwebjs_auth/session` altında tutar. Bu klasör varsa QR
+// okutmadan yeniden bağlanmak mümkündür.
+function hasSavedSession(): boolean {
+  return fs.existsSync(path.join(getSessionPath(), "session"));
+}
+
+const RECONNECT_DELAYS_MS = [15000, 30000, 60000, 120000, 300000];
+
+function cancelReconnect(): void {
+  if (store.reconnectTimer) {
+    clearTimeout(store.reconnectTimer);
+    store.reconnectTimer = null;
+  }
+}
+
+// Oturum beklenmedik şekilde koptuğunda kayıtlı oturumla kendiliğinden yeniden
+// bağlanır; kimsenin Ayarlar'a gidip "Bağlan"a basması gerekmez. Kayıtlı oturum
+// yoksa (telefondan çıkış yapılmış, oturum bozuk) QR gerektiği için bir şey yapmayız.
+// Deneme sayısı sınırlı: sürekli başarısız oluyorsa Chrome'u durmadan açıp kapatmayız.
+function scheduleReconnect(): void {
+  if (store.reconnectTimer || !hasSavedSession()) return;
+  const delay = RECONNECT_DELAYS_MS[store.reconnectAttempts];
+  if (delay === undefined) {
+    console.error("[whatsapp] otomatik yeniden bağlanma denemeleri tükendi");
+    return;
+  }
+  store.reconnectAttempts++;
+  console.error(`[whatsapp] bağlantı koptu, ${delay / 1000} sn sonra yeniden bağlanılacak`);
+  store.reconnectTimer = setTimeout(() => {
+    store.reconnectTimer = null;
+    initWhatsApp().catch(() => {});
+  }, delay);
+}
+
+// Sunucu açılırken çağrılır (src/instrumentation.ts). Kayıtlı oturum varsa
+// WhatsApp'ı kendiliğinden bağlar; sunucu yeniden başladı diye panelin
+// "Bağlı Değil"de kalmasına gerek yok.
+export function autoStartWhatsApp(): void {
+  if (!hasSavedSession()) return;
+  initWhatsApp().catch(() => {});
+}
+
 // Mevcut client'ı (varsa) güvenle kapatır ve store'u temizler. destroy() askıda
 // kalabildiği için timeout ile yarıştırılır. deleteSession=true ise diskteki
 // (bozuk olabilecek) oturum dosyaları da silinir ki sonraki bağlanma taze QR üretsin.
@@ -130,6 +203,10 @@ async function teardownClient(deleteSession = false): Promise<void> {
   if (store.loadingTimer) {
     clearTimeout(store.loadingTimer);
     store.loadingTimer = null;
+  }
+  if (store.healthTimer) {
+    clearTimeout(store.healthTimer);
+    store.healthTimer = null;
   }
   const c = store.client;
   store.client = null;
@@ -164,6 +241,9 @@ export function initWhatsApp(): Promise<void> {
 
 async function startWhatsApp(): Promise<void> {
   installRejectionGuard();
+  // Elle "Bağlan"a basıldıysa ya da otomatik deneme zamanı geldiyse bekleyen
+  // ikinci bir denemeye gerek yok.
+  cancelReconnect();
 
   // Zaten sağlıklı bir durum varsa dokunma:
   if (store.client) {
@@ -232,6 +312,7 @@ async function startWhatsApp(): Promise<void> {
       clearTimeout(store.loadingTimer);
       store.loadingTimer = null;
     }
+    store.reconnectAttempts = 0;
     const info = client.info;
     store.state = {
       status: "ready",
@@ -243,6 +324,14 @@ async function startWhatsApp(): Promise<void> {
   client.on("authenticated", () => {
     if (!isCurrent()) return;
     store.state = { ...store.state, status: "loading" };
+    // Kimlik doğrulandı: oturum SAĞLAM. 90 sn sayacı oturumu silerdi; oysa yavaş
+    // makinede sohbetlerin yüklenmesi bundan uzun sürebiliyor ve geçerli oturumu
+    // silmek boş yere QR okutturuyordu. Yerine daha uzun, oturumu silmeyen bir sayaç.
+    if (store.loadingTimer) clearTimeout(store.loadingTimer);
+    store.loadingTimer = setTimeout(() => {
+      store.loadingTimer = null;
+      if (isCurrent() && store.state.status === "loading") void markSessionDead();
+    }, 180000);
   });
 
   client.on("auth_failure", async () => {
@@ -251,10 +340,13 @@ async function startWhatsApp(): Promise<void> {
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
   });
 
-  client.on("disconnected", async () => {
+  client.on("disconnected", async (reason) => {
     if (!isCurrent()) return;
     await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
+    // Telefondan çıkış yapıldıysa (LOGOUT) yeniden QR gerekir; kendiliğinden
+    // bağlanmayı denemeyiz. Diğer kopmalarda kayıtlı oturumla geri döneriz.
+    if (String(reason) !== "LOGOUT") scheduleReconnect();
   });
 
   // initialize() kendisi reddedebilir (Chrome açılamaması, kilitli profil vb.);
@@ -266,10 +358,14 @@ async function startWhatsApp(): Promise<void> {
     if (!isCurrent()) return;
     await teardownClient();
     store.state = { status: "disconnected", qrDataUrl: null, info: null };
+    scheduleReconnect();
   });
 }
 
 export async function disconnectWhatsApp(): Promise<void> {
+  // Kullanıcı bilerek kesti: otomatik yeniden bağlanma devreye girmesin.
+  cancelReconnect();
+  store.reconnectAttempts = 0;
   // Önce state'i hemen güncelle ki panel anında "Bağlı Değil" göstersin.
   store.state = { status: "disconnected", qrDataUrl: null, info: null };
   // Client'ı kapat + oturum dosyalarını sil (tekrar bağlanınca yeni QR çıksın).
@@ -285,16 +381,18 @@ function randomDelay(min: number, max: number): number {
 }
 
 const DISCONNECTED_MESSAGE =
-  "WhatsApp bağlantısı koptu. Ayarlar'dan yeniden bağlanın.";
+  "WhatsApp bağlantısı koptu. Otomatik yeniden bağlanılıyor; birkaç dakika içinde düzelmezse Ayarlar'dan bağlanın.";
 
 // Oturumun öldüğünü anladığımızda durumu düşürüyoruz ki panel "Bağlı" göstermeye
 // devam etmesin ve kullanıcı yeniden bağlanabilsin. Client'ı sadece null'lamak
 // yetmez: arkadaki Chrome süreci yaşamaya devam edip oturum klasörünü kilitler ve
 // sonraki bağlanma "browser is already running" ile patlar. Bu yüzden teardown şart.
-// Oturum dosyaları silinmez — kimlik bilgileri sağlam, sadece tarayıcı öldü.
+// Oturum dosyaları silinmez — kimlik bilgileri sağlam, sadece tarayıcı öldü; bu
+// yüzden kayıtlı oturumla kendiliğinden yeniden bağlanmayı da planlarız.
 async function markSessionDead(): Promise<void> {
   await teardownClient();
   store.state = { status: "disconnected", qrDataUrl: null, info: null };
+  scheduleReconnect();
 }
 
 // Oturum tamamen koptuğunda dönen hatalar. Bunlar tek bir numaraya özgü
@@ -317,26 +415,41 @@ function isDeadSessionError(message: string): boolean {
   return DEAD_SESSION_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
-// whatsapp-web.js kendi iç zamanlayıcılarında Puppeteer çağrıları yapıyor. WhatsApp
-// Web sayfası kendini yenilediğinde bu çağrılar "Attempted to use detached Frame"
-// gibi hatalarla reddediliyor ve kütüphane bunları hiçbir yerde yakalamıyor. Node'un
-// varsayılan davranışı unhandledRejection'da süreci öldürmek; bu da sunucu-baslat.bat
-// döngüsünü tetikliyor, geride oturum klasörünü kilitleyen öksüz Chrome bırakıyor ve
-// uygulama sürekli çöküyor. Bu yüzden SADECE tarayıcı/oturum kaynaklı reddetmeleri
-// yutuyoruz; alakasız hatalar eskisi gibi yükselmeye devam etsin.
+// whatsapp-web.js, WhatsApp Web sayfası kendini yenilediğinde ('framenavigated')
+// kendini yeniden enjekte ediyor ama bunu try/catch'siz yapıyor. Yenileme sırasında
+// çerçeve kopunca "Attempted to use detached Frame" / "Target closed" hataları
+// sahipsiz kalıyor. Next.js bunları konsola basar ama süreci ÖLDÜRMEZ — yani bu
+// satırlar tek başına zararsız. Asıl tehlike, yenilemeden sonra kütüphanenin
+// toparlanamaması: panel "Bağlı" der ama mesaj gitmez. Bu yüzden bu hatayı bir
+// sinyal olarak kullanıp oturumun gerçekten toparlandığını kontrol ediyoruz.
 function installRejectionGuard(): void {
   if (globalForWA.__waRejectionGuard) return;
   globalForWA.__waRejectionGuard = true;
 
   process.on("unhandledRejection", (reason) => {
     const message = reason instanceof Error ? reason.message : String(reason);
-    if (!isDeadSessionError(message)) throw reason;
+    if (!isDeadSessionError(message) || store.state.status !== "ready") return;
 
-    console.error("[whatsapp] tarayıcı hatası yutuldu:", message);
-    // Sayfa gerçekten öldüyse durumu düşür ki panel "Bağlı" göstermeye devam etmesin.
-    // Hata geçiciyse (sayfa yenilenmesi vb.) oturuma dokunmuyoruz.
-    if (store.state.status === "ready" && !isSessionAlive()) void markSessionDead();
+    if (!isSessionAlive()) void markSessionDead();
+    else scheduleHealthCheck();
   });
+}
+
+// Yenileme dalgası bitsin diye 30 sn bekler, sonra oturumun CONNECTED olup
+// olmadığına bakar. Toparlanamadıysa ölü sayar ve kayıtlı oturumla yeniden bağlanır.
+// Aynı dalgadaki onlarca hata için tek kontrol yapılır.
+function scheduleHealthCheck(): void {
+  if (store.healthTimer) return;
+  store.healthTimer = setTimeout(async () => {
+    store.healthTimer = null;
+    const client = store.client;
+    if (!client || store.state.status !== "ready") return;
+    if (await isSessionHealthy(client, 20000)) return;
+    if (store.client === client) {
+      console.error("[whatsapp] sayfa yenilendikten sonra oturum toparlanamadı");
+      await markSessionDead();
+    }
+  }, 30000);
 }
 
 export async function sendWhatsAppMessage(
@@ -352,9 +465,10 @@ export async function sendWhatsAppMessage(
     };
   }
 
-  // Göndermeden önce oturumun gerçekten yaşadığını doğrula.
-  if (!isSessionAlive()) {
-    await markSessionDead();
+  // Göndermeden önce oturumun gerçekten çalıştığını doğrula (sayfanın açık olması
+  // yetmez; WhatsApp Web yenileniyorsa toparlanması için biraz bekleriz).
+  if (!(await isSessionHealthy(client, 20000))) {
+    if (store.client === client) await markSessionDead();
     return { success: false, error: DISCONNECTED_MESSAGE, disconnected: true };
   }
 
