@@ -97,11 +97,38 @@ export type SyncProgress = {
 
 export type SyncResult = SyncProgress & { done: true; durationMs: number };
 
+// Senkronlar sıraya alınır: ekrandaki "Güncelle" ile yeni vardiyada tetiklenen
+// otomatik senkron aynı anda çalışırsa aynı dosyayı iki kez yazabilirdi.
+// Zincir global'de, çünkü her Next.js rota bundle'ı modülün ayrı kopyasını yükler.
+const globalForVrd = globalThis as unknown as { __vrdSyncChain?: Promise<unknown> };
+
 // VRD klasörünü DB ile senkronlar. onProgress her dosya sonrası çağrılır ve
 // Promise dönebilir — çağıran taraf araya `setImmediate` koyup NDJSON akışını
 // istemciye flush edebilir. better-sqlite3 senkron olduğundan, arada event
 // loop'a dönmek büyük backfill sırasında hem akışı canlı tutar hem UI'ı bloklamaz.
-export async function syncVrd(
+export function syncVrd(
+  onProgress?: (p: SyncProgress) => void | Promise<void>
+): Promise<SyncResult> {
+  const run = (globalForVrd.__vrdSyncChain ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => runSync(onProgress));
+  globalForVrd.__vrdSyncChain = run;
+  return run;
+}
+
+// Yeni vardiya dosyası düştüğünde çağrılır: Müşteri Analitiği ve Telegram plaka
+// sorgusu kimse "Güncelle"ye basmadan son vardiyaya kadar güncel kalsın. Yalnız
+// yeni/değişmiş dosyalar okunur. İlk tam aktarım (binlerce dosya) hiç yapılmadıysa
+// burada BAŞLATILMAZ — sunucuyu dakikalarca meşgul eder; o, Müşteri Analitiği
+// ekranından bilerek başlatılır.
+export function syncVrdInBackground(): void {
+  if (!hasIngestedData()) return;
+  syncVrd(() => new Promise<void>((r) => setImmediate(r))).catch((e) =>
+    console.error("[vrd] otomatik senkron hatası:", e instanceof Error ? e.message : e)
+  );
+}
+
+async function runSync(
   onProgress?: (p: SyncProgress) => void | Promise<void>
 ): Promise<SyncResult> {
   const started = Date.now();

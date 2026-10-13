@@ -227,9 +227,10 @@ export async function buildPendingShiftReports(): Promise<
 // Vardiya raporu KAPALIYKEN çağrılır: rapor üretmeden, yeni dosyaları sessizce
 // "raporlandı" işaretler. Böylece özellik yeniden açıldığında geçmiş vardiyalar
 // toplu gönderilmez; yalnızca açıldıktan sonra düşenler raporlanır.
-export function skipPendingShifts(): void {
-  if (ensureShiftBaseline()) return;
-  for (const f of listUnreportedShiftFiles()) claimShift(f);
+// Kaç yeni vardiya işaretlendiğini döner.
+export function skipPendingShifts(): number {
+  if (ensureShiftBaseline()) return 0;
+  return listUnreportedShiftFiles().filter(claimShift).length;
 }
 
 // ---------------------------------------------------------------------------

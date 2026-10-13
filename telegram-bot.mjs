@@ -39,6 +39,12 @@ function rememberChat(chatId, name) {
      ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen`
   ).run(String(chatId), name || "");
 }
+function isChatEnabled(chatId) {
+  const row = db
+    .prepare("SELECT enabled FROM telegram_chats WHERE chat_id = ?")
+    .get(String(chatId));
+  return row?.enabled === 1;
+}
 function enabledChatIds() {
   return db
     .prepare("SELECT chat_id FROM telegram_chats WHERE enabled = 1")
@@ -181,6 +187,34 @@ async function fetchNearby(payload) {
   }
 }
 
+// Plaka sorgusu: pompacı plakayı yazar, müşteri istasyondan çıkmadan geçmişini görür.
+async function fetchPlate(query) {
+  try {
+    const d = await apiGet(`/api/ai/telegram/plaka?q=${encodeURIComponent(query)}`);
+    return d.text || "Plaka sorgulanamadı.";
+  } catch {
+    return "Plaka sorgulanamadı (sunucuya ulaşılamadı).";
+  }
+}
+
+// Mesaj tek başına bir plaka mı? ("54 ABC 123", "54abc123", "54-ABC-123")
+// Yalnız harf/rakam/boşluk/tireden oluşan kısa metinler denenir ki normal
+// sorular yanlışlıkla plaka sanılmasın.
+function looksLikePlate(text) {
+  if (text.length > 15 || !/^[0-9A-Za-zÇçĞğİıÖöŞşÜü\s-]+$/.test(text)) return false;
+  const norm = text.toUpperCase().replace(/İ/g, "I").replace(/[^0-9A-Z]/g, "");
+  return /^\d{2}[A-Z]{1,4}\d{1,5}$/.test(norm);
+}
+
+async function answerPlate(chatId, query) {
+  if (!isChatEnabled(chatId)) {
+    await sendMessage(chatId, "Plaka sorgusu yalnızca yetkili kullanıcılara açık.");
+    return;
+  }
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  await sendMessage(chatId, await fetchPlate(query), "HTML");
+}
+
 // Telegram'da konum paylaşma butonu gösterir (telefondan tek dokunuş).
 async function requestLocation(chatId) {
   await tg("sendMessage", {
@@ -200,6 +234,9 @@ Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
 • "Bugün ciro ne kadar?"
 • "En çok hangi yakıt satıldı?"
 • "Hangi filo en çok aldı?"
+
+🚗 <b>Plaka sorgusu:</b> Sadece plakayı yazın (ör. <code>54 ABC 123</code>).
+Müşterinin yeni mi olduğunu, en son ne zaman geldiğini hemen görürsünüz.
 
 Komutlar:
 /rapor — Günlük satış raporu
@@ -248,6 +285,18 @@ async function handleMessage(msg) {
   }
   if (lower === "/yakin" || lower === "/yakın" || lower === "yakin" || lower === "yakın") {
     await requestLocation(chatId);
+    return;
+  }
+  if (lower === "/plaka") {
+    await sendMessage(chatId, "Plakayı yazmanız yeterli, ör. 54 ABC 123");
+    return;
+  }
+  if (lower.startsWith("/plaka ")) {
+    await answerPlate(chatId, text.slice(7));
+    return;
+  }
+  if (looksLikePlate(text)) {
+    await answerPlate(chatId, text);
     return;
   }
   if (lower === "devam" || lower === "daha" || lower === "/devam") {

@@ -440,6 +440,7 @@ export type PlateProfile = {
   plaka: string;
   ilkZiyaret: string;
   sonZiyaret: string;
+  sonIso: string; // YYYY-MM-DD — "kaç gün önce" hesabı için
   ziyaret: number;
   ortAralik: string;
   toplamLitre: number;
@@ -563,6 +564,7 @@ export function getPlateProfile(query: string): PlateProfile | null {
     plaka: agg.display || plaka,
     ilkZiyaret: fmtDayLong(agg.first_iso),
     sonZiyaret: fmtDayLong(agg.last_iso!),
+    sonIso: agg.last_iso!,
     ziyaret: agg.ziyaret,
     ortAralik: ortAralikGun > 0 ? `${ortAralikGun} gün` : "—",
     toplamLitre: Math.round(agg.litre),

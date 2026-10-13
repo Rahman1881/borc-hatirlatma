@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { buildPendingShiftReports, skipPendingShifts } from "@/lib/station-report";
 import { isShiftReportEnabled } from "@/lib/telegram";
+import { syncVrdInBackground } from "@/lib/vrd-ingest";
 
 export const maxDuration = 60;
 
@@ -10,11 +11,14 @@ export const maxDuration = 60;
 // Vardiya raporu kapalıysa yeni dosyalar sessizce işaretlenir (backlog birikmez).
 export async function GET() {
   try {
+    // Yeni vardiya düştüyse analitik verisini de arka planda tazeleriz (plaka
+    // sorgusu ve Müşteri Analitiği son vardiyaya kadar güncel kalsın).
     if (!isShiftReportEnabled()) {
-      skipPendingShifts();
+      if (skipPendingShifts() > 0) syncVrdInBackground();
       return NextResponse.json({ ok: true, shifts: [] });
     }
     const shifts = await buildPendingShiftReports();
+    if (shifts.length > 0) syncVrdInBackground();
     return NextResponse.json({ ok: true, shifts });
   } catch (err: unknown) {
     const message =
