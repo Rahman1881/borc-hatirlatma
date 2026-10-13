@@ -127,6 +127,16 @@ function initDb(db: Database.Database) {
       data TEXT NOT NULL                -- ScanHistoryEntry JSON
     );
 
+    -- Müşteri Bulucu: potansiyel müşterilere WhatsApp'tan atılan ilk tanıtım
+    -- mesajının şablonları. Borç hatırlatma şablonlarından (templates) ayrı
+    -- tutulur ki Mesaj Gönder ekranına karışmasın.
+    CREATE TABLE IF NOT EXISTS prospect_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
     -- Telegram "yakınımdaki müşteriler": bir konum paylaşıldığında bulunan tüm
     -- sonuçlar burada saklanır. "devam" denince aynıları tekrar gönderilmesin diye
     -- kaç tanesinin gönderildiği (sent) tutulur. Her chat için tek kayıt.

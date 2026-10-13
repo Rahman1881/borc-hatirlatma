@@ -394,6 +394,8 @@ function randomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+export const NOT_ON_WHATSAPP = "Bu numara WhatsApp kullanmıyor";
+
 const DISCONNECTED_MESSAGE =
   "WhatsApp bağlantısı koptu. Otomatik yeniden bağlanılıyor; birkaç dakika içinde düzelmezse Ayarlar'dan bağlanın.";
 
@@ -494,7 +496,7 @@ export async function sendWhatsAppMessage(
 
     const isRegistered = await client.isRegisteredUser(chatId);
     if (!isRegistered) {
-      return { success: false, error: "Bu numara WhatsApp kullanmıyor" };
+      return { success: false, error: NOT_ON_WHATSAPP };
     }
 
     // Logo varsa resim + caption olarak gönder, yoksa sadece metin

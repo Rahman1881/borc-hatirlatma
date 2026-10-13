@@ -28,7 +28,12 @@ import {
   Send,
   X,
   User,
+  MessageCircle,
+  CheckCircle2,
+  Plus,
+  AlertTriangle,
 } from "lucide-react";
+import { toWhatsAppNumber } from "@/lib/phone";
 
 const iller = ["Sakarya", "Kocaeli", "Düzce"];
 const ilceler: Record<string, string[]> = {
@@ -100,7 +105,18 @@ type SavedCustomer = Lead & {
   savedAt: number;
   region: string;
   note: string;
-  status: "Yeni" | "Arandı" | "Teklif Verildi" | "Kazanıldı";
+  status:
+    | "Yeni"
+    | "Mesaj Atıldı"
+    | "Arandı"
+    | "Teklif Verildi"
+    | "Kazanıldı"
+    | "İlgilenmiyor";
+  // WhatsApp ilk tanıtım mesajı (Müşteri Bulucu → WhatsApp).
+  waSentAt?: number;
+  waMessage?: string;
+  // Numara WhatsApp'ta kayıtlı değilse "yok"; buton bir daha gösterilmez.
+  waStatus?: "yok";
 };
 
 type ProfileGroup = { group: string; profiles: string[] };
@@ -121,19 +137,43 @@ const PAGE_SIZE = 6;
 // Aynı anda en fazla bu kadar işletme profili seçilebilir (performans için).
 const MAX_PROFILES = 3;
 
-const statusTone: Record<SavedCustomer["status"], "primary" | "warning" | "positive" | "neutral"> = {
+const statusTone: Record<
+  SavedCustomer["status"],
+  "primary" | "warning" | "positive" | "neutral" | "negative"
+> = {
   Yeni: "neutral",
+  "Mesaj Atıldı": "primary",
   Arandı: "warning",
   "Teklif Verildi": "primary",
   Kazanıldı: "positive",
+  İlgilenmiyor: "negative",
 };
 
 const statusOptions: SavedCustomer["status"][] = [
   "Yeni",
+  "Mesaj Atıldı",
   "Arandı",
   "Teklif Verildi",
   "Kazanıldı",
+  "İlgilenmiyor",
 ];
+
+// Bir işletmeye WhatsApp'tan ilk mesaj atılabilir mi?
+//  send = atılabilir · sent = daha önce atıldı · none = cep numarası yok,
+//  WhatsApp'ta kayıtlı değil ya da "İlgilenmiyor" (RET yazmış) işaretli.
+// `related`: işletmenin kendi kaydı + aynı numarayı kullanan diğer kayıtlar
+// (Google'da aynı firmanın birden çok kaydı olabiliyor; takip numara üzerinden de).
+type WaInfo = { kind: "send" } | { kind: "sent"; at: number } | { kind: "none" };
+
+function waInfo(lead: Lead, related: SavedCustomer[]): WaInfo {
+  if (!toWhatsAppNumber(lead.phone)) return { kind: "none" };
+  if (related.some((c) => c.status === "İlgilenmiyor" || c.waStatus === "yok")) {
+    return { kind: "none" };
+  }
+  const at = Math.max(0, ...related.map((c) => c.waSentAt ?? 0));
+  if (at) return { kind: "sent", at };
+  return { kind: "send" };
+}
 
 export default function MusteriBulucuPage() {
   const [tab, setTab] = useState<"leads" | "history" | "saved" | "tenders">("leads");
@@ -157,6 +197,9 @@ export default function MusteriBulucuPage() {
 
   // kayıtlılar
   const [saved, setSaved] = useState<SavedCustomer[]>([]);
+
+  // WhatsApp ilk mesaj penceresi (hangi işletmeye)
+  const [waTarget, setWaTarget] = useState<{ lead: Lead; region: string } | null>(null);
 
   // Telegram'a gönderme
   const [tgChats, setTgChats] = useState<
@@ -220,6 +263,21 @@ export default function MusteriBulucuPage() {
   }, []);
 
   const savedIds = useMemo(() => new Set(saved.map((s) => s.id)), [saved]);
+  const savedById = useMemo(() => new Map(saved.map((s) => [s.id, s])), [saved]);
+  // Cep numarası → o numarayı kullanan kayıtlı işletmeler.
+  const savedByPhone = useMemo(() => {
+    const m = new Map<string, SavedCustomer[]>();
+    for (const s of saved) {
+      const p = toWhatsAppNumber(s.phone);
+      if (p) m.set(p, [...(m.get(p) ?? []), s]);
+    }
+    return m;
+  }, [saved]);
+  const waFor = (l: Lead): WaInfo => {
+    const own = savedById.get(l.id);
+    const byPhone = savedByPhone.get(toWhatsAppNumber(l.phone) ?? "") ?? [];
+    return waInfo(l, own ? [own, ...byPhone] : byPhone);
+  };
 
   function persistResults(leads: Lead[], region: string) {
     try {
@@ -338,6 +396,25 @@ export default function MusteriBulucuPage() {
   function updateSaved(id: string, patch: Partial<SavedCustomer>) {
     setSaved((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
     storePost({ action: "updateSaved", id, patch });
+  }
+
+  // Mesaj atılan işletme sunucuda Kayıtlı Müşteriler'e "Mesaj Atıldı" olarak
+  // eklendi/güncellendi; ekranı buna göre güncelle. Kaydetmedeki gibi tarama
+  // sonuçlarından da çıkar.
+  function onWhatsAppSent(c: SavedCustomer) {
+    setSaved((s) =>
+      s.some((x) => x.id === c.id) ? s.map((x) => (x.id === c.id ? c : x)) : [c, ...s]
+    );
+    setResults((r) => {
+      const n = r ? r.filter((x) => x.id !== c.id) : r;
+      if (n) persistResults(n, lastRegion);
+      return n;
+    });
+  }
+
+  // Numara WhatsApp'ta yok: sunucu kayıtlı müşteriye işledi, ekranda da gizle.
+  function onWhatsAppMissing(id: string) {
+    setSaved((s) => s.map((x) => (x.id === id ? { ...x, waStatus: "yok" } : x)));
   }
 
   // Filtre ekranına geri dön (önceki sonuçlar yeni tarama yapılana kadar saklı kalır).
@@ -642,6 +719,8 @@ export default function MusteriBulucuPage() {
                     lead={l}
                     saved={savedIds.has(l.id)}
                     onSave={() => saveCustomer(l)}
+                    wa={waFor(l)}
+                    onWhatsApp={() => setWaTarget({ lead: l, region: lastRegion })}
                   />
                 ))}
               </div>
@@ -686,6 +765,16 @@ export default function MusteriBulucuPage() {
         />
       )}
 
+      {waTarget && (
+        <WhatsAppModal
+          lead={waTarget.lead}
+          region={waTarget.region}
+          onSent={onWhatsAppSent}
+          onMissing={onWhatsAppMissing}
+          onClose={() => setWaTarget(null)}
+        />
+      )}
+
       {tab === "history" && !historyDetail && (
         <HistoryList
           history={history}
@@ -702,6 +791,8 @@ export default function MusteriBulucuPage() {
         <HistoryDetail
           entry={historyDetail}
           savedIds={savedIds}
+          waFor={waFor}
+          onWhatsApp={(l) => setWaTarget({ lead: l, region: historyDetail.region })}
           onSave={saveCustomer}
           onBack={() => setHistoryDetail(null)}
           onSend={openSendModal}
@@ -711,6 +802,8 @@ export default function MusteriBulucuPage() {
       {tab === "saved" && (
         <SavedList
           saved={saved}
+          waFor={waFor}
+          onWhatsApp={(c) => setWaTarget({ lead: c, region: c.region })}
           onRemove={removeSaved}
           onUpdate={updateSaved}
           onGoFind={() => setTab("leads")}
@@ -781,10 +874,14 @@ function LeadCard({
   lead,
   saved,
   onSave,
+  wa,
+  onWhatsApp,
 }: {
   lead: Lead;
   saved: boolean;
   onSave: () => void;
+  wa: WaInfo;
+  onWhatsApp: () => void;
 }) {
   return (
     <Panel className="flex flex-col transition-colors hover:border-primary/40">
@@ -841,6 +938,7 @@ function LeadCard({
             </>
           )}
         </button>
+        <WhatsAppButton wa={wa} onClick={onWhatsApp} grow />
         {lead.mapsUrl && (
           <a
             href={lead.mapsUrl}
@@ -868,11 +966,15 @@ function LeadCard({
 
 function SavedList({
   saved,
+  waFor,
+  onWhatsApp,
   onRemove,
   onUpdate,
   onGoFind,
 }: {
   saved: SavedCustomer[];
+  waFor: (l: Lead) => WaInfo;
+  onWhatsApp: (c: SavedCustomer) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, patch: Partial<SavedCustomer>) => void;
   onGoFind: () => void;
@@ -922,6 +1024,19 @@ function SavedList({
                     <MapPin className="h-3.5 w-3.5" /> {c.address}
                   </p>
                 )}
+                {c.waSentAt && (
+                  <details className="mt-1 text-xs text-muted-foreground">
+                    <summary className="flex cursor-pointer items-center gap-1.5 hover:text-foreground">
+                      <MessageCircle className="h-3.5 w-3.5 text-[#25D366]" />
+                      WhatsApp mesajı gönderildi · {formatScanDate(c.waSentAt)}
+                    </summary>
+                    {c.waMessage && (
+                      <p className="mt-2 whitespace-pre-wrap rounded-lg border bg-muted/40 p-3 text-foreground">
+                        {c.waMessage}
+                      </p>
+                    )}
+                  </details>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -933,6 +1048,11 @@ function SavedList({
                   <Phone className="h-4 w-4" /> Ara
                 </a>
               )}
+              <WhatsAppButton
+                wa={waFor(c)}
+                onClick={() => onWhatsApp(c)}
+                allowResend
+              />
               {c.mapsUrl && (
                 <a
                   href={c.mapsUrl}
@@ -1094,12 +1214,16 @@ function HistoryList({
 function HistoryDetail({
   entry,
   savedIds,
+  waFor,
+  onWhatsApp,
   onSave,
   onBack,
   onSend,
 }: {
   entry: ScanHistoryEntry;
   savedIds: Set<string>;
+  waFor: (l: Lead) => WaInfo;
+  onWhatsApp: (l: Lead) => void;
   onSave: (l: Lead) => void;
   onBack: () => void;
   onSend: (leads: Lead[], region: string) => void;
@@ -1167,6 +1291,8 @@ function HistoryDetail({
               lead={l}
               saved={savedIds.has(l.id)}
               onSave={() => onSave(l)}
+              wa={waFor(l)}
+              onWhatsApp={() => onWhatsApp(l)}
             />
           ))}
         </div>
@@ -1330,6 +1456,366 @@ function SendToTelegramModal({
           >
             {msg.text}
           </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Kartlardaki WhatsApp butonu. Mesaj atılmış işletmede (allowResend yoksa) yalnızca
+// bilgi gösterir; cep numarası olmayan / WhatsApp'ı olmayan / RET yazmış işletmede görünmez.
+function WhatsAppButton({
+  wa,
+  onClick,
+  grow,
+  allowResend,
+}: {
+  wa: WaInfo;
+  onClick: () => void;
+  grow?: boolean;
+  allowResend?: boolean;
+}) {
+  if (wa.kind === "none") return null;
+  if (wa.kind === "sent" && !allowResend) {
+    return (
+      <span
+        className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm text-muted-foreground ${
+          grow ? "flex-1" : ""
+        }`}
+      >
+        <CheckCircle2 className="h-4 w-4 text-[#25D366]" /> Mesaj atıldı
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-opacity ${
+        wa.kind === "sent"
+          ? "border text-muted-foreground hover:text-foreground"
+          : "bg-[#128C7E] text-white hover:opacity-90"
+      } ${grow ? "flex-1" : ""}`}
+    >
+      <MessageCircle className="h-4 w-4" />
+      {wa.kind === "sent" ? "Tekrar yaz" : "WhatsApp"}
+    </button>
+  );
+}
+
+type ProspectTemplate = { id: number; name: string; body: string };
+
+// Bundan fazlası bilgi amaçlı uyarı verir (engel değildir): tanımadık numaralara
+// günde çok mesaj atmak, borç hatırlatmalarının da gittiği numarayı riske atar.
+const SOFT_DAILY_LIMIT = 20;
+
+function fillProspect(body: string, lead: Lead, firma: string): string {
+  return body.replace(/\{isletme\}/g, lead.name).replace(/\{firma\}/g, firma);
+}
+
+function WhatsAppModal({
+  lead,
+  region,
+  onSent,
+  onMissing,
+  onClose,
+}: {
+  lead: Lead;
+  region: string;
+  onSent: (c: SavedCustomer) => void;
+  onMissing: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [templates, setTemplates] = useState<ProspectTemplate[]>([]);
+  const [firma, setFirma] = useState("");
+  const [sentToday, setSentToday] = useState(0);
+  const [waStatus, setWaStatus] = useState<string | null>(null);
+  // Seçili şablon; null = yeni şablon yazılıyor.
+  const [selId, setSelId] = useState<number | null>(null);
+  const [name, setName] = useState("");
+  const [body, setBody] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [savingTpl, setSavingTpl] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/ai/musteri-bulucu/whatsapp").then((r) => r.json()),
+      fetch("/api/whatsapp").then((r) => r.json()),
+    ])
+      .then(([t, w]) => {
+        const list: ProspectTemplate[] = Array.isArray(t.templates) ? t.templates : [];
+        setTemplates(list);
+        setFirma(t.firma || "");
+        setSentToday(t.sentToday || 0);
+        setWaStatus(w?.status ?? null);
+        if (list[0]) {
+          setSelId(list[0].id);
+          setName(list[0].name);
+          setBody(list[0].body);
+        }
+      })
+      .catch(() => setMsg({ ok: false, text: "Şablonlar yüklenemedi." }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const current = templates.find((t) => t.id === selId);
+  const dirty = current
+    ? current.name !== name || current.body !== body
+    : body.trim() !== "";
+  const preview = fillProspect(body, lead, firma);
+  const ready = waStatus === "ready";
+
+  function pick(t: ProspectTemplate | null) {
+    setSelId(t?.id ?? null);
+    setName(t?.name ?? "");
+    setBody(t?.body ?? "");
+    setMsg(null);
+  }
+
+  async function saveTemplate() {
+    setSavingTpl(true);
+    setMsg(null);
+    try {
+      const r = await fetch("/api/ai/musteri-bulucu/whatsapp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "saveTemplate", id: selId ?? undefined, name, body }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Şablon kaydedilemedi.");
+      const saved: ProspectTemplate = { id: d.id, name: name.trim(), body: body.trim() };
+      setTemplates((ts) =>
+        ts.some((t) => t.id === saved.id)
+          ? ts.map((t) => (t.id === saved.id ? saved : t))
+          : [...ts, saved]
+      );
+      pick(saved);
+      setMsg({ ok: true, text: "Şablon kaydedildi." });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Şablon kaydedilemedi." });
+    } finally {
+      setSavingTpl(false);
+    }
+  }
+
+  async function deleteTemplate() {
+    if (!current || !window.confirm(`"${current.name}" şablonu silinsin mi?`)) return;
+    await fetch("/api/ai/musteri-bulucu/whatsapp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "deleteTemplate", id: current.id }),
+    }).catch(() => {});
+    const rest = templates.filter((t) => t.id !== current.id);
+    setTemplates(rest);
+    pick(rest[0] ?? null);
+  }
+
+  async function send(force = false) {
+    setSending(true);
+    setMsg(null);
+    try {
+      const r = await fetch("/api/ai/musteri-bulucu/whatsapp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", lead, region, message: preview, force }),
+      });
+      const d = await r.json();
+      if (r.status === 409 && d.error === "already_sent") {
+        setSending(false);
+        const when = formatScanDate(d.waSentAt);
+        const ok = window.confirm(
+          d.otherName
+            ? `Bu numaraya "${d.otherName}" kaydı üzerinden ${when} tarihinde zaten mesaj gönderildi. Tekrar gönderilsin mi?`
+            : `Bu işletmeye ${when} tarihinde zaten mesaj gönderildi. Tekrar gönderilsin mi?`
+        );
+        if (ok) await send(true);
+        return;
+      }
+      if (!r.ok) {
+        if (d.waMissing) onMissing(lead.id);
+        throw new Error(d.error || "Gönderilemedi.");
+      }
+      onSent(d.customer as SavedCustomer);
+      setSentToday(d.sentToday ?? sentToday + 1);
+      setDone(true);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Gönderilemedi." });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl border bg-card shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b p-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[#25D366]/15 text-[#128C7E]">
+              <MessageCircle className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">WhatsApp&apos;tan İlk Mesaj</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {lead.name} · {lead.phone}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="Kapat"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4 overflow-y-auto p-5">
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Yükleniyor…</p>
+          ) : done ? (
+            <div className="py-6 text-center">
+              <CheckCircle2 className="mx-auto h-10 w-10 text-[#25D366]" />
+              <p className="mt-3 text-sm font-semibold">Mesaj gönderildi</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                İşletme Kayıtlı Müşteriler&apos;e &quot;Mesaj Atıldı&quot; olarak eklendi.
+                Dönüş olursa takibi oradan sürdürebilirsiniz; RET yazarsa durumunu
+                &quot;İlgilenmiyor&quot; yapın, bir daha mesaj gönderilmez.
+              </p>
+              <button
+                onClick={onClose}
+                className="mt-5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                Kapat
+              </button>
+            </div>
+          ) : (
+            <>
+              {!ready && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <p>
+                    WhatsApp bağlı değil. Göndermek için önce{" "}
+                    <a href="/settings" className="font-medium underline">
+                      Ayarlar
+                    </a>
+                    &apos;dan bağlanın.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Şablon</p>
+                <div className="flex flex-wrap gap-2">
+                  {templates.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => pick(t)}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                        t.id === selId
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "bg-card text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {t.name}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => pick(null)}
+                    className={`flex items-center gap-1 rounded-full border border-dashed px-3 py-1.5 text-xs font-medium transition-colors ${
+                      selId === null
+                        ? "border-primary text-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Yeni şablon
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Şablon adı"
+                  className="h-9 w-full rounded-lg border bg-muted/50 px-3 text-sm outline-none focus:border-primary"
+                />
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={8}
+                  placeholder="Mesaj metni…"
+                  className="w-full rounded-lg border bg-muted/50 p-3 text-sm outline-none focus:border-primary"
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    <code>{"{isletme}"}</code> işletme adıyla, <code>{"{firma}"}</code>{" "}
+                    &quot;{firma}&quot; ile doldurulur.
+                  </p>
+                  <div className="flex gap-2">
+                    {current && (
+                      <button
+                        onClick={deleteTemplate}
+                        className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs text-muted-foreground hover:border-red-500/40 hover:text-red-500"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Sil
+                      </button>
+                    )}
+                    <button
+                      onClick={saveTemplate}
+                      disabled={!dirty || !name.trim() || !body.trim() || savingTpl}
+                      className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-foreground hover:border-primary/40 disabled:opacity-40"
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {current ? "Şablonu güncelle" : "Şablon olarak kaydet"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  Önizleme · karşı tarafa böyle gidecek (Ayarlar&apos;da logo varsa logonun altında)
+                </p>
+                <p className="whitespace-pre-wrap rounded-lg border border-[#25D366]/30 bg-[#25D366]/5 p-3 text-sm">
+                  {preview || "—"}
+                </p>
+              </div>
+            </>
+          )}
+
+          {msg && (
+            <p
+              className={`text-sm font-medium ${
+                msg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600"
+              }`}
+            >
+              {msg.text}
+            </p>
+          )}
+        </div>
+
+        {!loading && !done && (
+          <div className="flex flex-col gap-3 border-t p-5 sm:flex-row sm:items-center sm:justify-between">
+            <p
+              className={`text-xs ${
+                sentToday >= SOFT_DAILY_LIMIT ? "text-amber-600" : "text-muted-foreground"
+              }`}
+            >
+              Bugün {sentToday} tanıtım mesajı gönderildi.
+              {sentToday >= SOFT_DAILY_LIMIT &&
+                " Tanımadık numaralara günde çok mesaj atmak numaranın engellenme riskini artırır."}
+            </p>
+            <button
+              onClick={() => send()}
+              disabled={sending || !ready || !body.trim()}
+              className="flex shrink-0 items-center justify-center gap-2 rounded-lg bg-[#128C7E] px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              <MessageCircle className="h-4 w-4" />
+              {sending ? "Gönderiliyor…" : "WhatsApp'tan Gönder"}
+            </button>
+          </div>
         )}
       </div>
     </div>
