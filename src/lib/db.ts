@@ -83,7 +83,8 @@ function initDb(db: Database.Database) {
     );
 
     -- Telegram bot aboneleri: bota yazan herkesin chat'i burada tutulur.
-    -- Otomatik raporlar enabled=1 olan tüm chat'lere gönderilir.
+    -- allowed (ensureTelegramAccessColumn ile eklenir) = botu kullanabilir;
+    -- enabled = otomatik raporları alır (yalnız allowed=1 ise).
     CREATE TABLE IF NOT EXISTS telegram_chats (
       chat_id TEXT PRIMARY KEY,
       name TEXT,
@@ -214,6 +215,8 @@ function initDb(db: Database.Database) {
     db.exec("ALTER TABLE customers ADD COLUMN raw_data TEXT");
   }
 
+  ensureTelegramAccessColumn(db);
+
   // Default template
   const templateCount = db.prepare("SELECT COUNT(*) as count FROM templates").get() as { count: number };
   if (templateCount.count === 0) {
@@ -245,3 +248,24 @@ function initDb(db: Database.Database) {
 }
 
 export default getDb;
+
+// Telegram botuna erişim izni. Eskiden bota yazan herkes otomatik abone olup her
+// şeye ulaşıyordu; artık yeni yazan kişi onay bekler (allowed = 0) ve yalnız
+// Ayarlar'dan erişimi açılan kişiler botu kullanabilir. `enabled` artık yalnız
+// "otomatik raporları alsın mı" anlamına gelir.
+// Sütun eklenirken mevcut abonelerin erişimi açık bırakılır ki güncellemeyle
+// patron dahil herkes bir anda kilitlenmesin; tanınmayanlar Ayarlar'dan kapatılır.
+// Telegram botu (telegram-bot.mjs) aynı DB'yi Next'ten önce açabildiği için aynı
+// geçişi kendisi de yapar; ikisi yarışırsa "duplicate column" hatası yutulur.
+export function ensureTelegramAccessColumn(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(telegram_chats)").all() as { name: string }[];
+  if (cols.some((c) => c.name === "allowed")) return;
+  try {
+    db.transaction(() => {
+      db.exec("ALTER TABLE telegram_chats ADD COLUMN allowed INTEGER NOT NULL DEFAULT 0");
+      db.exec("UPDATE telegram_chats SET allowed = 1");
+    })();
+  } catch (err) {
+    if (!(err instanceof Error && /duplicate column/i.test(err.message))) throw err;
+  }
+}

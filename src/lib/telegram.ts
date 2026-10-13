@@ -11,6 +11,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export type TelegramChat = {
   chatId: string;
   name: string;
+  // Botu kullanabilir mi (soru, plaka sorgusu). Yeni yazan kişi onay bekler (false).
+  allowed: boolean;
+  // Otomatik raporları (zamanlanmış + vardiya) alsın mı. Yalnız allowed ise geçerli.
   enabled: boolean;
   firstSeen: string;
   lastSeen: string;
@@ -136,11 +139,12 @@ export function listChats(): TelegramChat[] {
   const db = getDb();
   const rows = db
     .prepare(
-      "SELECT chat_id, name, enabled, first_seen, last_seen FROM telegram_chats ORDER BY first_seen ASC"
+      "SELECT chat_id, name, allowed, enabled, first_seen, last_seen FROM telegram_chats ORDER BY first_seen ASC"
     )
     .all() as {
     chat_id: string;
     name: string;
+    allowed: number;
     enabled: number;
     first_seen: string;
     last_seen: string;
@@ -148,20 +152,53 @@ export function listChats(): TelegramChat[] {
   return rows.map((r) => ({
     chatId: r.chat_id,
     name: r.name || "",
+    allowed: r.allowed === 1,
     enabled: r.enabled === 1,
     firstSeen: r.first_seen,
     lastSeen: r.last_seen,
   }));
 }
 
-// Bota yazan bir kişiyi abone listesine ekler/günceller (worker kullanır).
+// Bota yazan bir kişiyi abone listesine ekler/günceller. Yeni kişi erişimsiz ve
+// raporsuz başlar; Ayarlar'dan açılır.
 export function rememberChat(chatId: string | number, name: string): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO telegram_chats (chat_id, name, last_seen)
-     VALUES (?, ?, datetime('now','localtime'))
+    `INSERT INTO telegram_chats (chat_id, name, allowed, enabled, last_seen)
+     VALUES (?, ?, 0, 0, datetime('now','localtime'))
      ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen`
   ).run(String(chatId), name);
+}
+
+// Ayarlar'dan erişim / rapor anahtarlarını değiştirir. Erişim yeni açıldıysa true döner
+// (kişiye "erişiminiz açıldı" mesajı gönderilebilsin diye).
+export function updateChat(
+  chatId: string,
+  patch: { allowed?: boolean; enabled?: boolean }
+): { granted: boolean } {
+  const db = getDb();
+  const before = db
+    .prepare("SELECT allowed FROM telegram_chats WHERE chat_id = ?")
+    .get(chatId) as { allowed: number } | undefined;
+  if (!before) throw new Error("Abone bulunamadı.");
+  if (typeof patch.allowed === "boolean") {
+    db.prepare("UPDATE telegram_chats SET allowed = ? WHERE chat_id = ?").run(
+      patch.allowed ? 1 : 0,
+      chatId
+    );
+  }
+  if (typeof patch.enabled === "boolean") {
+    db.prepare("UPDATE telegram_chats SET enabled = ? WHERE chat_id = ?").run(
+      patch.enabled ? 1 : 0,
+      chatId
+    );
+  }
+  return { granted: patch.allowed === true && before.allowed !== 1 };
+}
+
+// Kişiyi listeden siler. Tekrar yazarsa onay bekleyen yeni kişi olarak gelir.
+export function removeChat(chatId: string): void {
+  getDb().prepare("DELETE FROM telegram_chats WHERE chat_id = ?").run(chatId);
 }
 
 async function tgFetch(
@@ -221,12 +258,12 @@ export async function sendMessage(
   });
 }
 
-// enabled olan tüm abonelere mesaj yollar; sonuç sayısını döndürür.
+// Erişimi ve raporları açık abonelere mesaj yollar; sonuç sayısını döndürür.
 export async function broadcast(
   text: string,
   token = getTelegramToken()
 ): Promise<{ sent: number; failed: number }> {
-  const chats = listChats().filter((c) => c.enabled);
+  const chats = listChats().filter((c) => c.allowed && c.enabled);
   let sent = 0;
   let failed = 0;
   for (const c of chats) {

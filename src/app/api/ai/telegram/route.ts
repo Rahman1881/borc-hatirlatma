@@ -11,6 +11,8 @@ import {
   sendMessage,
   isShiftReportEnabled,
   setShiftReportEnabled,
+  updateChat,
+  removeChat,
   type ReportSchedule,
 } from "@/lib/telegram";
 import { buildReport, buildShiftReport } from "@/lib/station-report";
@@ -168,7 +170,7 @@ export async function POST(req: NextRequest) {
           success: true,
           sent,
           failed,
-          note: "Henüz bota yazan kimse yok. Patron bota /start yazınca abone olur.",
+          note: "Raporları alan kimse yok. Ayarlar → Aboneler'den kişinin erişimini ve raporlarını açın.",
         });
       }
       return NextResponse.json({ success: true, sent, failed });
@@ -185,8 +187,8 @@ export async function POST(req: NextRequest) {
       if (!chatId) {
         return NextResponse.json({ error: "Alıcı seçin." }, { status: 400 });
       }
-      // Yalnızca bilinen (bota yazmış) abonelere gönderilebilir.
-      if (!listChats().some((c) => c.chatId === chatId)) {
+      // Yalnızca erişimi açık abonelere gönderilebilir.
+      if (!listChats().some((c) => c.chatId === chatId && c.allowed)) {
         return NextResponse.json({ error: "Geçersiz alıcı." }, { status: 400 });
       }
       const leads = Array.isArray(body.leads) ? (body.leads as LeadLite[]) : [];
@@ -216,6 +218,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, chunks: chunks.length, sent });
     }
 
+    // Ayarlar → Aboneler: erişim / rapor anahtarı.
+    if (action === "chat") {
+      const chatId = String(body.chatId || "");
+      if (!chatId) {
+        return NextResponse.json({ error: "Abone seçin." }, { status: 400 });
+      }
+      const { granted } = updateChat(chatId, {
+        allowed: typeof body.allowed === "boolean" ? body.allowed : undefined,
+        enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+      });
+      // Erişimi yeni açılan kişiye haber ver; gönderilemezse önemli değil.
+      if (granted && isTelegramConfigured()) {
+        await sendMessage(
+          chatId,
+          "✅ Erişiminiz açıldı. Bota soru sorabilir ya da plakayı yazarak (ör. <code>54 ABC 123</code>) müşteri sorgulayabilirsiniz."
+        ).catch(() => {});
+      }
+      return NextResponse.json({ success: true, chats: listChats() });
+    }
+
+    if (action === "removeChat") {
+      const chatId = String(body.chatId || "");
+      if (!chatId) {
+        return NextResponse.json({ error: "Abone seçin." }, { status: 400 });
+      }
+      removeChat(chatId);
+      return NextResponse.json({ success: true, chats: listChats() });
+    }
+
     if (action === "test") {
       if (!isTelegramConfigured()) {
         return NextResponse.json(
@@ -231,7 +262,7 @@ export async function POST(req: NextRequest) {
           success: true,
           sent,
           failed,
-          note: "Henüz bota yazan kimse yok. Patron bota /start yazınca abone olur.",
+          note: "Raporları alan kimse yok. Ayarlar → Aboneler'den kişinin erişimini ve raporlarını açın.",
         });
       }
       return NextResponse.json({ success: true, sent, failed });

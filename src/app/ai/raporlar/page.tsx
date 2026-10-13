@@ -16,7 +16,7 @@ type TgSchedule = {
 type TgStatus = {
   configured?: boolean;
   botUsername?: string;
-  chats?: { chatId: string; name: string; enabled: boolean }[];
+  chats?: { chatId: string; name: string; allowed: boolean; enabled: boolean }[];
   schedules?: TgSchedule[];
   vardiyaEnabled?: boolean;
 };
@@ -144,7 +144,8 @@ export default function RaporlarPage() {
 
   const configured = !!status?.configured;
   const username = status?.botUsername || "";
-  const chatCount = status?.chats?.filter((c) => c.enabled).length ?? 0;
+  // Raporlar yalnız erişimi ve raporları açık abonelere gider.
+  const chatCount = status?.chats?.filter((c) => c.allowed && c.enabled).length ?? 0;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -246,7 +247,7 @@ export default function RaporlarPage() {
                     }`}
                   >
                     {configured
-                      ? `Bağlı · ${chatCount} abone`
+                      ? `Bağlı · ${chatCount} kişi rapor alıyor`
                       : "Bağlı değil · Ayarlar'dan token girin"}
                   </p>
                 </div>

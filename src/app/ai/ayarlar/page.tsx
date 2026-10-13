@@ -4,7 +4,15 @@ import { useState, useEffect } from "react";
 import { Panel, SectionTitle, Pill } from "@/components/ai/ui";
 import { Database, FileText, Bot, Check, X, KeyRound, FolderOpen, Clock, Users } from "lucide-react";
 
-type TgChat = { chatId: string; name: string; enabled: boolean; firstSeen: string; lastSeen: string };
+// allowed = botu kullanabilir (soru, plaka sorgusu); enabled = otomatik raporları alır.
+type TgChat = {
+  chatId: string;
+  name: string;
+  allowed: boolean;
+  enabled: boolean;
+  firstSeen: string;
+  lastSeen: string;
+};
 type TgSchedule = {
   id: string;
   label: string;
@@ -267,6 +275,37 @@ export default function AyarlarPage() {
       });
     } catch {
       // sessizce geç; bir sonraki kayıtta tekrar denenir
+    }
+  }
+
+  // Abone erişim / rapor anahtarı. Ekranı hemen günceller, sunucunun cevabıyla eşitler.
+  async function updateTgChat(chatId: string, patch: { allowed?: boolean; enabled?: boolean }) {
+    setTgChats((cs) => cs.map((c) => (c.chatId === chatId ? { ...c, ...patch } : c)));
+    try {
+      const res = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "chat", chatId, ...patch }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.chats)) setTgChats(d.chats);
+    } catch {
+      // sessizce geç; sayfa yenilenince gerçek durum görünür
+    }
+  }
+
+  async function removeTgChat(c: TgChat) {
+    if (!window.confirm(`"${c.name || c.chatId}" listeden silinsin mi?`)) return;
+    try {
+      const res = await fetch("/api/ai/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "removeChat", chatId: c.chatId }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.chats)) setTgChats(d.chats);
+    } catch {
+      // sessizce geç
     }
   }
 
@@ -551,18 +590,55 @@ export default function AyarlarPage() {
             <div className="mb-1.5 flex items-center gap-1.5 font-medium text-foreground">
               <Users className="h-3.5 w-3.5" /> Aboneler ({tgChats.length})
             </div>
+            <p className="mb-2 text-muted-foreground">
+              Bota yazan kişi önce <b className="text-foreground">onay bekler</b>; bot ona
+              hiçbir bilgi vermez. <b className="text-foreground">Erişim</b> açık olanlar botu
+              kullanabilir (soru, plaka sorgusu). <b className="text-foreground">Raporlar</b> açık
+              olanlara otomatik ve vardiya raporları gider. Tanımadığınız kişileri silin.
+            </p>
             {tgChats.length === 0 ? (
               <p className="text-muted-foreground">
-                Henüz kimse bota yazmadı. Bota{" "}
-                <code className="rounded bg-muted px-1 py-0.5">/start</code> yazan
-                herkes otomatik abone olur ve raporları almaya başlar.
+                Henüz kimse bota yazmadı. Kişi bota{" "}
+                <code className="rounded bg-muted px-1 py-0.5">/start</code> yazınca burada
+                onay bekleyen olarak görünür.
               </p>
             ) : (
-              <ul className="space-y-1">
+              <ul className="divide-y rounded-md bg-card">
                 {tgChats.map((c) => (
-                  <li key={c.chatId} className="flex items-center justify-between gap-2">
-                    <span className="text-foreground">{c.name || "İsimsiz"}</span>
-                    <span className="font-mono text-muted-foreground">{c.chatId}</span>
+                  <li
+                    key={c.chatId}
+                    className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {c.name || "İsimsiz"}
+                        </span>
+                        {!c.allowed && <Pill tone="warning">Onay bekliyor</Pill>}
+                      </div>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {c.chatId} · son: {c.lastSeen}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <ChatSwitch
+                        label="Erişim"
+                        on={c.allowed}
+                        onChange={(v) => updateTgChat(c.chatId, { allowed: v })}
+                      />
+                      <ChatSwitch
+                        label="Raporlar"
+                        on={c.enabled}
+                        disabled={!c.allowed}
+                        onChange={(v) => updateTgChat(c.chatId, { enabled: v })}
+                      />
+                      <button
+                        onClick={() => removeTgChat(c)}
+                        className="rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:border-red-500/40 hover:text-red-500"
+                      >
+                        Sil
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -777,6 +853,46 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         className="h-10 rounded-lg border bg-muted/50 px-3 text-sm outline-none focus:border-primary"
       />
+    </label>
+  );
+}
+
+// Abone satırındaki küçük anahtar (Erişim / Raporlar).
+function ChatSwitch({
+  label,
+  on,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  on: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label
+      className={`flex items-center gap-1.5 text-[11px] ${
+        disabled ? "text-muted-foreground/50" : "text-muted-foreground"
+      }`}
+    >
+      {label}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!on)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed ${
+          on && !disabled ? "bg-primary" : "bg-input ring-1 ring-border"
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
+            on ? "translate-x-[18px]" : "translate-x-[3px]"
+          }`}
+        />
+      </button>
     </label>
   );
 }

@@ -203,7 +203,7 @@ export default function MusteriBulucuPage() {
 
   // Telegram'a gönderme
   const [tgChats, setTgChats] = useState<
-    { chatId: string; name: string; enabled: boolean }[]
+    { chatId: string; name: string; allowed: boolean }[]
   >([]);
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendingTg, setSendingTg] = useState(false);
@@ -433,8 +433,8 @@ export default function MusteriBulucuPage() {
       .then((d) => {
         if (Array.isArray(d.chats)) {
           setTgChats(
-            (d.chats as { chatId: string; name: string; enabled: boolean }[]).filter(
-              (c) => c.enabled
+            (d.chats as { chatId: string; name: string; allowed: boolean }[]).filter(
+              (c) => c.allowed
             )
           );
         }
@@ -1384,7 +1384,7 @@ function SendToTelegramModal({
   onSend,
   onClose,
 }: {
-  chats: { chatId: string; name: string; enabled: boolean }[];
+  chats: { chatId: string; name: string; allowed: boolean }[];
   count: number;
   region: string;
   sending: boolean;

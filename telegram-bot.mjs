@@ -32,22 +32,46 @@ function setSetting(key, value) {
 function getToken() {
   return (getSetting("telegram_bot_token") || "").trim();
 }
+// Erişim izni sütunu (allowed). Next tarafı da aynı geçişi yapar (src/lib/db.ts
+// ensureTelegramAccessColumn); bot Next'ten önce açılabildiği için burada da var.
+// Eklenirken mevcut abonelerin erişimi açık bırakılır.
+function ensureAccessColumn() {
+  const cols = db.prepare("PRAGMA table_info(telegram_chats)").all();
+  if (cols.length === 0 || cols.some((c) => c.name === "allowed")) return;
+  try {
+    db.transaction(() => {
+      db.exec("ALTER TABLE telegram_chats ADD COLUMN allowed INTEGER NOT NULL DEFAULT 0");
+      db.exec("UPDATE telegram_chats SET allowed = 1");
+    })();
+  } catch (e) {
+    if (!/duplicate column/i.test(e?.message || "")) throw e;
+  }
+}
+ensureAccessColumn();
+
+// Bota yazan kişiyi listeye ekler/günceller. Yeni kişi erişimsiz ve raporsuz
+// başlar (Ayarlar'dan açılır). Yeni eklendiyse true döner.
 function rememberChat(chatId, name) {
+  const existed = db
+    .prepare("SELECT 1 FROM telegram_chats WHERE chat_id = ?")
+    .get(String(chatId));
   db.prepare(
-    `INSERT INTO telegram_chats (chat_id, name, last_seen)
-     VALUES (?, ?, datetime('now','localtime'))
+    `INSERT INTO telegram_chats (chat_id, name, allowed, enabled, last_seen)
+     VALUES (?, ?, 0, 0, datetime('now','localtime'))
      ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen`
   ).run(String(chatId), name || "");
+  return !existed;
 }
-function isChatEnabled(chatId) {
+function isChatAllowed(chatId) {
   const row = db
-    .prepare("SELECT enabled FROM telegram_chats WHERE chat_id = ?")
+    .prepare("SELECT allowed FROM telegram_chats WHERE chat_id = ?")
     .get(String(chatId));
-  return row?.enabled === 1;
+  return row?.allowed === 1;
 }
+// Otomatik raporların gideceği kişiler: erişimi VE raporları açık olanlar.
 function enabledChatIds() {
   return db
-    .prepare("SELECT chat_id FROM telegram_chats WHERE enabled = 1")
+    .prepare("SELECT chat_id FROM telegram_chats WHERE enabled = 1 AND allowed = 1")
     .all()
     .map((r) => r.chat_id);
 }
@@ -207,10 +231,6 @@ function looksLikePlate(text) {
 }
 
 async function answerPlate(chatId, query) {
-  if (!isChatEnabled(chatId)) {
-    await sendMessage(chatId, "Plaka sorgusu yalnızca yetkili kullanıcılara açık.");
-    return;
-  }
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
   await sendMessage(chatId, await fetchPlate(query), "HTML");
 }
@@ -251,7 +271,29 @@ async function handleMessage(msg) {
     msg.chat?.username ||
     msg.chat?.title ||
     "";
-  rememberChat(chatId, name);
+  const isNew = rememberChat(chatId, name);
+
+  // Erişimi açılmamış kişiye hiçbir bilgi verilmez (rapor, soru, plaka, konum).
+  // Yalnız ilk yazışında ve /start'ta bir kez bilgilendirilir; rapor alan
+  // yöneticilere de "onay bekliyor" haberi gider.
+  if (!isChatAllowed(chatId)) {
+    const first = (msg.text || "").trim().toLocaleLowerCase("tr") === "/start";
+    if (isNew || first) {
+      await sendMessage(
+        chatId,
+        "⛔ Bu bot yalnızca Çark Petrol çalışanları içindir. Erişim için yöneticinizin onayı gerekiyor; onaylanınca size haber verilecek."
+      ).catch(() => {});
+    }
+    if (isNew) {
+      for (const admin of enabledChatIds()) {
+        await sendMessage(
+          admin,
+          `🔔 Bota yeni biri yazdı: ${name || "İsimsiz"} (${chatId}) — onay bekliyor.\nErişim vermek için: Ayarlar → Telegram → Aboneler.`
+        ).catch(() => {});
+      }
+    }
+    return;
+  }
 
   // Konum paylaşıldıysa: en yakın potansiyel müşterileri bul ve gönder.
   if (msg.location) {
