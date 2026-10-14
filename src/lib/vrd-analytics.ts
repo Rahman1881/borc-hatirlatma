@@ -82,12 +82,19 @@ function segmentOf(firstIso: string, lastIso: string, ref: string): "sadik" | "y
   return "sadik";
 }
 
+// İskonto yüzdesi: liste fiyatından vazgeçilen ciro / liste fiyatıyla olacak ciro
+// = (liste − satış) / liste. Bir ondalık hassasiyetle.
+function pctOf(iskonto: number, listeCiro: number): number {
+  return listeCiro > 0 ? Math.round((iskonto / listeCiro) * 1000) / 10 : 0;
+}
+
 export type PlateRow = {
   plaka: string;
   ziyaret: number;
   litre: number;
   ciro: number;
   iskonto: number;
+  iskontoPct: number;
   sonZiyaret: string;
   segment: "sadik" | "yeni" | "kacan";
   temsilci: string;
@@ -98,6 +105,7 @@ export type PlateBrief = {
   ziyaret: number;
   ciro: number;
   iskonto: number;
+  iskontoPct: number;
   sonZiyaret: string;
   ilkZiyaret: string;
   gunGecti: number;
@@ -113,14 +121,23 @@ export type OverviewData = {
     ilkDefa: number;
     iskontoluOran: number;
     iskontoCiro: number;
+    iskontoPct: number;
     ortIskonto: number; // kr/lt
     toplamCiro: number;
     toplamLitre: number;
   };
-  fuelDiscounts: { yakit: string; listeFiyat: number; ortSatis: number; litre: number; vazgecilenCiro: number }[];
+  fuelDiscounts: {
+    yakit: string;
+    listeFiyat: number;
+    ortSatis: number;
+    litre: number;
+    vazgecilenCiro: number;
+    vazgecilenPct: number;
+  }[];
   fuelDemand: { yakit: string; litre: number; pct: number }[];
-  topAttendants: { ad: string; iskonto: number; islem: number }[];
-  dailyTrend: { gun: string; iso: string; ciro: number }[];
+  // iskontoPct: temsilcinin iskontolu satışlarında ortalama indirim oranı
+  topAttendants: { ad: string; iskonto: number; iskontoPct: number; islem: number }[];
+  dailyTrend: { gun: string; iso: string; ciro: number; pct: number }[];
   segments: { sadik: number; yeni: number; kacan: number };
   segmentPlates: { sadik: PlateBrief[]; yeni: PlateBrief[]; kacan: PlateBrief[] };
   topPlates: PlateRow[];
@@ -142,7 +159,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
     refLabel: "",
     period,
     periodLabel: "",
-    kpi: { musteri: 0, ilkDefa: 0, iskontoluOran: 0, iskontoCiro: 0, ortIskonto: 0, toplamCiro: 0, toplamLitre: 0 },
+    kpi: { musteri: 0, ilkDefa: 0, iskontoluOran: 0, iskontoCiro: 0, iskontoPct: 0, ortIskonto: 0, toplamCiro: 0, toplamLitre: 0 },
     fuelDiscounts: [],
     fuelDemand: [],
     topAttendants: [],
@@ -173,6 +190,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
       `SELECT
          COUNT(DISTINCT plaka) as musteri,
          COALESCE(SUM(iskonto),0) as iskontoCiro,
+         COALESCE(SUM(liste_fiyat * litre),0) as listeCiro,
          COALESCE(SUM(litre),0) as litre,
          COALESCE(SUM(tutar),0) as tutar,
          COUNT(*) as adet,
@@ -180,7 +198,15 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
        FROM vrd_sales
        WHERE is_pesin = 1 AND iso BETWEEN ? AND ?`
     )
-    .get(lo, hi) as { musteri: number; iskontoCiro: number; litre: number; tutar: number; adet: number; iskontolu: number };
+    .get(lo, hi) as {
+    musteri: number;
+    iskontoCiro: number;
+    listeCiro: number;
+    litre: number;
+    tutar: number;
+    adet: number;
+    iskontolu: number;
+  };
 
   // İlk defa gelen: plakanın TÜM veri içindeki ilk günü bu döneme düşüyor.
   const ilkDefa = db
@@ -199,6 +225,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
     ilkDefa: ilkDefa.c,
     iskontoluOran: kpiRow.adet > 0 ? Math.round((kpiRow.iskontolu / kpiRow.adet) * 100) : 0,
     iskontoCiro: Math.round(kpiRow.iskontoCiro),
+    iskontoPct: pctOf(kpiRow.iskontoCiro, kpiRow.listeCiro),
     ortIskonto: kpiRow.litre > 0 ? Math.round((kpiRow.iskontoCiro / kpiRow.litre) * 100) : 0, // kr/lt
     toplamCiro: Math.round(kpiRow.tutar),
     toplamLitre: Math.round(kpiRow.litre),
@@ -211,12 +238,20 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
               MAX(liste_fiyat) as listeFiyat,
               SUM(tutar) as tutar,
               SUM(litre) as litre,
-              SUM(iskonto) as vazgecilenCiro
+              SUM(iskonto) as vazgecilenCiro,
+              SUM(liste_fiyat * litre) as listeCiro
        FROM vrd_sales
        WHERE is_pesin = 1 AND iso BETWEEN ? AND ? AND litre > 0
        GROUP BY yakit`
     )
-    .all(lo, hi) as { yakit: string; listeFiyat: number; tutar: number; litre: number; vazgecilenCiro: number }[];
+    .all(lo, hi) as {
+    yakit: string;
+    listeFiyat: number;
+    tutar: number;
+    litre: number;
+    vazgecilenCiro: number;
+    listeCiro: number;
+  }[];
 
   const fuelDiscounts = fuelRows
     .map((f) => ({
@@ -226,6 +261,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
       ortSatis: f.litre > 0 ? f.tutar / f.litre : 0,
       litre: Math.round(f.litre),
       vazgecilenCiro: Math.round(f.vazgecilenCiro),
+      vazgecilenPct: pctOf(f.vazgecilenCiro, f.listeCiro),
     }))
     .sort((a, b) => FUEL_ORDER.indexOf(a._key) - FUEL_ORDER.indexOf(b._key))
     .map(({ _key, ...rest }) => rest); // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -240,7 +276,8 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
   // — En çok iskonto veren temsilciler —
   const topAttendants = db
     .prepare(
-      `SELECT temsilci as ad, SUM(iskonto) as iskonto, COUNT(*) as islem
+      `SELECT temsilci as ad, SUM(iskonto) as iskonto, SUM(liste_fiyat * litre) as listeCiro,
+              COUNT(*) as islem
        FROM vrd_sales
        WHERE is_pesin = 1 AND iso BETWEEN ? AND ? AND temsilci != '' AND iskonto > 0
        GROUP BY temsilci
@@ -249,27 +286,34 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
     )
     .all(lo, hi)
     .map((r) => {
-      const x = r as { ad: string; iskonto: number; islem: number };
-      return { ad: x.ad, iskonto: Math.round(x.iskonto), islem: x.islem };
+      const x = r as { ad: string; iskonto: number; listeCiro: number; islem: number };
+      return {
+        ad: x.ad,
+        iskonto: Math.round(x.iskonto),
+        iskontoPct: pctOf(x.iskonto, x.listeCiro),
+        islem: x.islem,
+      };
     });
 
   // — Günlük vazgeçilen ciro trendi (son 7 gün, ref günü dahil) —
   const trendLo = addDays(ref, -6);
   const trendRows = db
     .prepare(
-      `SELECT iso, SUM(iskonto) as ciro
+      `SELECT iso, SUM(iskonto) as ciro, SUM(liste_fiyat * litre) as listeCiro
        FROM vrd_sales
        WHERE is_pesin = 1 AND iso BETWEEN ? AND ?
        GROUP BY iso`
     )
-    .all(trendLo, ref) as { iso: string; ciro: number }[];
-  const trendMap = new Map(trendRows.map((r) => [r.iso, r.ciro]));
+    .all(trendLo, ref) as { iso: string; ciro: number; listeCiro: number }[];
+  const trendMap = new Map(trendRows.map((r) => [r.iso, r]));
   const dailyTrend = Array.from({ length: 7 }, (_, i) => {
     const iso = addDays(trendLo, i);
+    const t = trendMap.get(iso);
     return {
       iso,
       gun: TR_WEEKDAYS[isoToDate(iso).getDay()],
-      ciro: Math.round(trendMap.get(iso) || 0),
+      ciro: Math.round(t?.ciro || 0),
+      pct: t ? pctOf(t.ciro, t.listeCiro) : 0,
     };
   });
 
@@ -282,7 +326,8 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
               MAX(iso) as last_iso,
               COUNT(DISTINCT iso) as ziyaret,
               SUM(tutar) as ciro,
-              SUM(iskonto) as iskonto
+              SUM(iskonto) as iskonto,
+              SUM(liste_fiyat * litre) as liste_ciro
        FROM vrd_sales WHERE is_pesin = 1
        GROUP BY plaka`
     )
@@ -294,6 +339,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
     ziyaret: number;
     ciro: number;
     iskonto: number;
+    liste_ciro: number;
   }[];
 
   const enriched = plateAgg.map((p) => ({ ...p, seg: segmentOf(p.first_iso, p.last_iso, ref) }));
@@ -305,6 +351,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
     ziyaret: p.ziyaret,
     ciro: Math.round(p.ciro),
     iskonto: Math.round(p.iskonto),
+    iskontoPct: pctOf(p.iskonto, p.liste_ciro),
     sonZiyaret: relDay(p.last_iso, ref),
     ilkZiyaret: fmtDayLong(p.first_iso),
     gunGecti: daysBetween(p.last_iso, ref),
@@ -332,6 +379,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
                 SUM(litre) as litre,
                 SUM(tutar) as ciro,
                 SUM(iskonto) as iskonto,
+                SUM(liste_fiyat * litre) as liste_ciro,
                 MAX(iso) as son_donem
          FROM vrd_sales
          WHERE is_pesin = 1 AND iso BETWEEN ? AND ?
@@ -346,6 +394,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
       litre: number;
       ciro: number;
       iskonto: number;
+      liste_ciro: number;
       son_donem: string;
     }[];
     return rows.map((r) => {
@@ -356,6 +405,7 @@ export function getOverview(period: Period, range?: DateRange): OverviewData {
         litre: Math.round(r.litre),
         ciro: Math.round(r.ciro),
         iskonto: Math.round(r.iskonto),
+        iskontoPct: pctOf(r.iskonto, r.liste_ciro),
         sonZiyaret: relDay(fl?.last_iso || r.son_donem, ref),
         segment: fl ? segmentOf(fl.first_iso, fl.last_iso, ref) : ("yeni" as const),
         temsilci: topTemsilciForPlate(db, r.plaka),
@@ -446,12 +496,22 @@ export type PlateProfile = {
   toplamLitre: number;
   toplamCiro: number;
   toplamIskonto: number;
+  toplamIskontoPct: number;
   segment: "Sadık" | "Yeni" | "Kaçan";
   temsilci: string;
   saatTercihi: string;
   yakitKarma: { yakit: string; pct: number }[];
   aylikTrend: { ay: string; adet: number }[];
-  gecmis: { tarih: string; yakit: string; litre: number; tutar: number; iskonto: number }[];
+  // temsilci: yakıtı dolduran pompacı (VRD'de peşin satışta PLAKA alanı)
+  gecmis: {
+    tarih: string;
+    yakit: string;
+    litre: number;
+    tutar: number;
+    iskonto: number;
+    iskontoPct: number;
+    temsilci: string;
+  }[];
 };
 
 const SEG_LABEL: Record<"sadik" | "yeni" | "kacan", "Sadık" | "Yeni" | "Kaçan"> = {
@@ -477,6 +537,7 @@ export function getPlateProfile(query: string): PlateProfile | null {
               SUM(litre) as litre,
               SUM(tutar) as ciro,
               SUM(iskonto) as iskonto,
+              SUM(liste_fiyat * litre) as liste_ciro,
               MAX(plaka_display) as display
        FROM vrd_sales
        WHERE is_pesin = 1 AND plaka = ?`
@@ -488,6 +549,7 @@ export function getPlateProfile(query: string): PlateProfile | null {
     litre: number;
     ciro: number;
     iskonto: number;
+    liste_ciro: number;
     display: string | null;
   };
   if (!agg.first_iso || agg.ziyaret === 0) return null;
@@ -544,11 +606,19 @@ export function getPlateProfile(query: string): PlateProfile | null {
   const gecmis = (
     db
       .prepare(
-        `SELECT iso, yakit, litre, tutar, iskonto FROM vrd_sales
+        `SELECT iso, yakit, litre, tutar, iskonto, liste_fiyat, temsilci FROM vrd_sales
          WHERE is_pesin = 1 AND plaka = ?
          ORDER BY iso DESC, saat DESC LIMIT 15`
       )
-      .all(plaka) as { iso: string; yakit: string; litre: number; tutar: number; iskonto: number }[]
+      .all(plaka) as {
+      iso: string;
+      yakit: string;
+      litre: number;
+      tutar: number;
+      iskonto: number;
+      liste_fiyat: number;
+      temsilci: string;
+    }[]
   ).map((g) => {
     const dt = isoToDate(g.iso);
     return {
@@ -557,6 +627,8 @@ export function getPlateProfile(query: string): PlateProfile | null {
       litre: Math.round(g.litre),
       tutar: Math.round(g.tutar),
       iskonto: Math.round(g.iskonto),
+      iskontoPct: pctOf(g.iskonto, g.liste_fiyat * g.litre),
+      temsilci: g.temsilci || "—",
     };
   });
 
@@ -570,6 +642,7 @@ export function getPlateProfile(query: string): PlateProfile | null {
     toplamLitre: Math.round(agg.litre),
     toplamCiro: Math.round(agg.ciro),
     toplamIskonto: Math.round(agg.iskonto),
+    toplamIskontoPct: pctOf(agg.iskonto, agg.liste_ciro),
     segment: SEG_LABEL[segmentOf(agg.first_iso, agg.last_iso!, ref)],
     temsilci,
     saatTercihi,

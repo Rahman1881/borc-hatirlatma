@@ -8,6 +8,7 @@ import {
   AnalitikShell,
   useAnalitik,
   tl,
+  Iskonto,
   plateHref,
   type Overview,
   type Segment,
@@ -110,7 +111,9 @@ function Content({ ov }: { ov: Overview }) {
                     <td className="py-2.5 pr-3 font-medium">{p.plaka}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{p.ziyaret}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">₺{tl(p.ciro)}</td>
-                    <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-rose-600">₺{tl(p.iskonto)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-rose-600">
+                      <Iskonto tl={p.iskonto} pct={p.iskontoPct} />
+                    </td>
                     {active === "yeni" ? (
                       <td className="py-2.5 pl-3 text-right text-xs text-muted-foreground">{p.ilkZiyaret}</td>
                     ) : (

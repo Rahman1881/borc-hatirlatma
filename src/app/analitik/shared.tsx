@@ -21,6 +21,30 @@ export function tl(n: number): string {
 export function tl2(n: number): string {
   return n.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// İskonto yüzdesi: "%1,4" (liste fiyatına göre indirim oranı).
+export function pct(n: number): string {
+  return `%${n.toLocaleString("tr-TR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+}
+
+// İskonto tutarı + yüzdesi yan yana: "₺1.250 %1,4". Tablolarda ve listelerde ortak.
+export function Iskonto({
+  tl: value,
+  pct: rate,
+  minus,
+  className = "",
+}: {
+  tl: number;
+  pct: number;
+  minus?: boolean;
+  className?: string;
+}) {
+  return (
+    <span className={`whitespace-nowrap ${className}`}>
+      {minus ? "−" : ""}₺{tl(value)}
+      <span className="ml-1 text-[11px] font-normal text-muted-foreground">{pct(rate)}</span>
+    </span>
+  );
+}
 
 // Yakıt etiketine göre renk tonu.
 export function fuelTone(label: string): string {
@@ -45,6 +69,7 @@ export type PlateRow = {
   litre: number;
   ciro: number;
   iskonto: number;
+  iskontoPct: number;
   sonZiyaret: string;
   segment: Segment;
   temsilci: string;
@@ -55,6 +80,7 @@ export type PlateBrief = {
   ziyaret: number;
   ciro: number;
   iskonto: number;
+  iskontoPct: number;
   sonZiyaret: string;
   ilkZiyaret: string;
   gunGecti: number;
@@ -70,14 +96,22 @@ export type Overview = {
     ilkDefa: number;
     iskontoluOran: number;
     iskontoCiro: number;
+    iskontoPct: number;
     ortIskonto: number;
     toplamCiro: number;
     toplamLitre: number;
   };
-  fuelDiscounts: { yakit: string; listeFiyat: number; ortSatis: number; litre: number; vazgecilenCiro: number }[];
+  fuelDiscounts: {
+    yakit: string;
+    listeFiyat: number;
+    ortSatis: number;
+    litre: number;
+    vazgecilenCiro: number;
+    vazgecilenPct: number;
+  }[];
   fuelDemand: { yakit: string; litre: number; pct: number }[];
-  topAttendants: { ad: string; iskonto: number; islem: number }[];
-  dailyTrend: { gun: string; iso: string; ciro: number }[];
+  topAttendants: { ad: string; iskonto: number; iskontoPct: number; islem: number }[];
+  dailyTrend: { gun: string; iso: string; ciro: number; pct: number }[];
   segments: { sadik: number; yeni: number; kacan: number };
   segmentPlates: { sadik: PlateBrief[]; yeni: PlateBrief[]; kacan: PlateBrief[] };
   topPlates: PlateRow[];
@@ -96,12 +130,21 @@ export type Profile = {
   toplamLitre: number;
   toplamCiro: number;
   toplamIskonto: number;
+  toplamIskontoPct: number;
   segment: "Sadık" | "Yeni" | "Kaçan";
   temsilci: string;
   saatTercihi: string;
   yakitKarma: { yakit: string; pct: number }[];
   aylikTrend: { ay: string; adet: number }[];
-  gecmis: { tarih: string; yakit: string; litre: number; tutar: number; iskonto: number }[];
+  gecmis: {
+    tarih: string;
+    yakit: string;
+    litre: number;
+    tutar: number;
+    iskonto: number;
+    iskontoPct: number;
+    temsilci: string;
+  }[];
 };
 
 export const PERIODS: { key: Period; label: string; icon: typeof Calendar }[] = [

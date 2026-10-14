@@ -21,6 +21,8 @@ import {
   KpiCard,
   useAnalitik,
   tl,
+  pct,
+  Iskonto,
   fuelTone,
   plateHref,
   SEG_PILL,
@@ -59,9 +61,9 @@ function Content({ ov }: { ov: Overview }) {
         <KpiCard icon={<Users className="h-5 w-5" />} label="Müşteri" value={tl(ov.kpi.musteri)} sub="satış yapılan plaka" tone="from-violet-500 to-fuchsia-500" />
         <KpiCard icon={<UserPlus className="h-5 w-5" />} label="İlk Defa Gelen" value={tl(ov.kpi.ilkDefa)} sub="yeni plaka" tone="from-sky-500 to-blue-500" />
         <KpiCard icon={<Wallet className="h-5 w-5" />} label="Toplam Ciro" value={`₺${tl(ov.kpi.toplamCiro)}`} sub={`${tl(ov.kpi.toplamLitre)} litre`} tone="from-indigo-500 to-violet-500" />
-        <KpiCard icon={<TrendingDown className="h-5 w-5" />} label="Vazgeçilen Ciro" value={`₺${tl(ov.kpi.iskontoCiro)}`} sub="liste fiyatından" tone="from-rose-500 to-red-500" />
+        <KpiCard icon={<TrendingDown className="h-5 w-5" />} label="Vazgeçilen Ciro" value={`₺${tl(ov.kpi.iskontoCiro)}`} sub={`liste fiyatından · ${pct(ov.kpi.iskontoPct)}`} tone="from-rose-500 to-red-500" />
         <KpiCard icon={<Percent className="h-5 w-5" />} label="İskontolu Oran" value={`%${ov.kpi.iskontoluOran}`} sub="iskontolu satış payı" tone="from-amber-500 to-orange-500" />
-        <KpiCard icon={<Repeat className="h-5 w-5" />} label="Ort. İskonto" value={`${ov.kpi.ortIskonto} kr/lt`} sub="litre başına" tone="from-emerald-500 to-green-500" />
+        <KpiCard icon={<Repeat className="h-5 w-5" />} label="Ort. İskonto" value={`${ov.kpi.ortIskonto} kr/lt`} sub={`litre başına · ${pct(ov.kpi.iskontoPct)}`} tone="from-emerald-500 to-green-500" />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -73,8 +75,8 @@ function Content({ ov }: { ov: Overview }) {
           </div>
           <div className="flex items-end gap-3" style={{ height: 140 }}>
             {ov.dailyTrend.map((d) => (
-              <div key={d.iso} className="group flex flex-1 flex-col items-center justify-end gap-1" title={`${d.iso} — ₺${tl(d.ciro)}`}>
-                <span className="text-[10px] font-medium text-muted-foreground opacity-0 group-hover:opacity-100">₺{tl(d.ciro)}</span>
+              <div key={d.iso} className="group flex flex-1 flex-col items-center justify-end gap-1" title={`${d.iso} — ₺${tl(d.ciro)} (${pct(d.pct)})`}>
+                <span className="text-[10px] font-medium text-muted-foreground opacity-0 group-hover:opacity-100">₺{tl(d.ciro)} · {pct(d.pct)}</span>
                 <div className="w-full rounded-t bg-gradient-to-t from-rose-500/50 to-red-500 transition-opacity group-hover:opacity-80" style={{ height: `${(d.ciro / maxTrend) * 110}px` }} />
                 <span className="text-[10px] text-muted-foreground">{d.gun}</span>
               </div>
@@ -171,7 +173,9 @@ function Content({ ov }: { ov: Overview }) {
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{p.ziyaret}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">₺{tl(p.ciro)}</td>
-                    <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-rose-600">₺{tl(p.iskonto)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-rose-600">
+                      <Iskonto tl={p.iskonto} pct={p.iskontoPct} />
+                    </td>
                     <td className="py-2.5 pl-3 text-right text-xs text-muted-foreground">{p.sonZiyaret}</td>
                   </tr>
                 ))}

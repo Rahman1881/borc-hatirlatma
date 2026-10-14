@@ -9,6 +9,8 @@ import {
   useAnalitik,
   tl,
   tl2,
+  pct,
+  Iskonto,
   fuelTone,
   type Overview,
 } from "../shared";
@@ -35,9 +37,9 @@ function Content({ ov }: { ov: Overview }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <KpiCard icon={<TrendingDown className="h-5 w-5" />} label="Vazgeçilen Ciro" value={`₺${tl(ov.kpi.iskontoCiro)}`} sub="liste fiyatından" tone="from-rose-500 to-red-500" />
+        <KpiCard icon={<TrendingDown className="h-5 w-5" />} label="Vazgeçilen Ciro" value={`₺${tl(ov.kpi.iskontoCiro)}`} sub={`liste fiyatından · ${pct(ov.kpi.iskontoPct)}`} tone="from-rose-500 to-red-500" />
         <KpiCard icon={<Percent className="h-5 w-5" />} label="İskontolu Oran" value={`%${ov.kpi.iskontoluOran}`} sub="iskontolu satış payı" tone="from-amber-500 to-orange-500" />
-        <KpiCard icon={<Fuel className="h-5 w-5" />} label="Ort. İskonto" value={`${ov.kpi.ortIskonto} kr/lt`} sub="litre başına" tone="from-emerald-500 to-green-500" />
+        <KpiCard icon={<Fuel className="h-5 w-5" />} label="Ort. İskonto" value={`${ov.kpi.ortIskonto} kr/lt`} sub={`litre başına · ${pct(ov.kpi.iskontoPct)}`} tone="from-emerald-500 to-green-500" />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -52,8 +54,6 @@ function Content({ ov }: { ov: Overview }) {
           ) : (
             <div className="space-y-4">
               {ov.fuelDiscounts.map((f) => {
-                const fark = f.listeFiyat - f.ortSatis;
-                const pct = f.listeFiyat > 0 ? (fark / f.listeFiyat) * 100 : 0;
                 const tone = fuelTone(f.yakit);
                 return (
                   <div key={f.yakit}>
@@ -68,9 +68,14 @@ function Content({ ov }: { ov: Overview }) {
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div className={`h-full rounded-full bg-gradient-to-r ${tone}`} style={{ width: `${Math.min(100, Math.max(2, pct * 25))}%` }} />
+                        <div className={`h-full rounded-full bg-gradient-to-r ${tone}`} style={{ width: `${Math.min(100, Math.max(2, f.vazgecilenPct * 25))}%` }} />
                       </div>
-                      <span className="w-28 text-right text-sm font-semibold tabular-nums text-rose-600">−₺{tl(f.vazgecilenCiro)}</span>
+                      <Iskonto
+                        tl={f.vazgecilenCiro}
+                        pct={f.vazgecilenPct}
+                        minus
+                        className="w-36 text-right text-sm font-semibold tabular-nums text-rose-600"
+                      />
                     </div>
                   </div>
                 );
@@ -78,7 +83,8 @@ function Content({ ov }: { ov: Overview }) {
             </div>
           )}
           <div className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-            Toplam vazgeçilen ciro: <span className="font-semibold text-foreground">₺{tl(toplamVazgecilen)}</span> · liste fiyatı = vardiya içi en yüksek FYT
+            Toplam vazgeçilen ciro: <span className="font-semibold text-foreground">₺{tl(toplamVazgecilen)}</span>{" "}
+            ({pct(ov.kpi.iskontoPct)}) · liste fiyatı = vardiya içi en yüksek FYT · yüzde = liste fiyatına göre indirim
           </div>
         </Panel>
 
@@ -97,7 +103,8 @@ function Content({ ov }: { ov: Overview }) {
                   <div className="mb-1 flex items-center justify-between text-sm">
                     <span className="font-medium">{a.ad}</span>
                     <span className="text-xs text-muted-foreground">
-                      {a.islem} işlem · <span className="font-semibold text-foreground">₺{tl(a.iskonto)}</span>
+                      {a.islem} işlem ·{" "}
+                      <Iskonto tl={a.iskonto} pct={a.iskontoPct} className="font-semibold text-foreground" />
                     </span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -118,8 +125,8 @@ function Content({ ov }: { ov: Overview }) {
         </div>
         <div className="flex items-end gap-3" style={{ height: 160 }}>
           {ov.dailyTrend.map((d) => (
-            <div key={d.iso} className="group flex flex-1 flex-col items-center justify-end gap-1" title={`${d.iso} — ₺${tl(d.ciro)}`}>
-              <span className="text-[10px] font-medium text-muted-foreground opacity-0 group-hover:opacity-100">₺{tl(d.ciro)}</span>
+            <div key={d.iso} className="group flex flex-1 flex-col items-center justify-end gap-1" title={`${d.iso} — ₺${tl(d.ciro)} (${pct(d.pct)})`}>
+              <span className="text-[10px] font-medium text-muted-foreground opacity-0 group-hover:opacity-100">₺{tl(d.ciro)} · {pct(d.pct)}</span>
               <div className="w-full rounded-t bg-gradient-to-t from-rose-500/50 to-red-500 transition-opacity group-hover:opacity-80" style={{ height: `${(d.ciro / maxTrend) * 130}px` }} />
               <span className="text-[10px] text-muted-foreground">{d.gun}</span>
             </div>

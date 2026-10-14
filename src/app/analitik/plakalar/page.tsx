@@ -17,6 +17,8 @@ import {
   AnalitikShell,
   useAnalitik,
   tl,
+  pct,
+  Iskonto,
   fuelTone,
   SEG_PILL,
   type Overview,
@@ -159,7 +161,9 @@ function PlateTable({
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{p.ziyaret}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{tl(p.litre)}</td>
                   <td className={`px-3 py-2.5 text-right tabular-nums ${highlight === "ciro" ? "font-semibold" : ""}`}>₺{tl(p.ciro)}</td>
-                  <td className={`px-3 py-2.5 text-right tabular-nums text-rose-600 ${highlight === "iskonto" ? "font-semibold" : ""}`}>₺{tl(p.iskonto)}</td>
+                  <td className={`px-3 py-2.5 text-right tabular-nums text-rose-600 ${highlight === "iskonto" ? "font-semibold" : ""}`}>
+                    <Iskonto tl={p.iskonto} pct={p.iskontoPct} />
+                  </td>
                   <td className="px-3 py-2.5 text-muted-foreground">{p.temsilci}</td>
                   <td className="py-2.5 pl-3 text-right text-xs text-muted-foreground">{p.sonZiyaret}</td>
                 </tr>
@@ -238,7 +242,12 @@ function PlateProfileBody({ profile: p }: { profile: Profile }) {
         <MiniStat label="Ort. Aralık" value={p.ortAralik} />
         <MiniStat label="Toplam Litre" value={tl(p.toplamLitre)} />
         <MiniStat label="Toplam Ciro" value={`₺${tl(p.toplamCiro)}`} />
-        <MiniStat label="Toplam İskonto" value={`₺${tl(p.toplamIskonto)}`} accent="text-rose-600" />
+        <MiniStat
+          label="Toplam İskonto"
+          value={`₺${tl(p.toplamIskonto)}`}
+          sub={`liste fiyatına göre ${pct(p.toplamIskontoPct)}`}
+          accent="text-rose-600"
+        />
         <MiniStat label="Saat Tercihi" value={p.saatTercihi} />
       </div>
 
@@ -298,6 +307,7 @@ function PlateProfileBody({ profile: p }: { profile: Profile }) {
               <tr className="border-b text-left text-xs text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Tarih</th>
                 <th className="px-3 py-2 font-medium">Yakıt</th>
+                <th className="px-3 py-2 font-medium">Dolduran</th>
                 <th className="px-3 py-2 text-right font-medium">Litre</th>
                 <th className="px-3 py-2 text-right font-medium">Tutar</th>
                 <th className="py-2 pl-3 text-right font-medium">İskonto</th>
@@ -308,9 +318,12 @@ function PlateProfileBody({ profile: p }: { profile: Profile }) {
                 <tr key={i} className="border-b last:border-0">
                   <td className="py-2.5 pr-3 font-medium">{g.tarih}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{g.yakit}</td>
+                  <td className="px-3 py-2.5">{g.temsilci}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{tl(g.litre)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">₺{tl(g.tutar)}</td>
-                  <td className="py-2.5 pl-3 text-right tabular-nums text-rose-600">₺{tl(g.iskonto)}</td>
+                  <td className="py-2.5 pl-3 text-right tabular-nums text-rose-600">
+                    <Iskonto tl={g.iskonto} pct={g.iskontoPct} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -321,11 +334,22 @@ function PlateProfileBody({ profile: p }: { profile: Profile }) {
   );
 }
 
-function MiniStat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function MiniStat({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  accent?: string;
+}) {
   return (
     <Panel className="p-4">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={`mt-1 text-base font-semibold tabular-nums ${accent ?? ""}`}>{value}</p>
+      {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
     </Panel>
   );
 }
