@@ -138,6 +138,38 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
+    -- WhatsApp resmi API (Cloud API, coexistence): Meta'nın webhook ile gönderdiği
+    -- gelen/giden mesajlar, telefondan yazılanlar (echo) ve geçmiş sohbetler. wamid,
+    -- Meta'nın mesaj kimliği; geçmiş aktarımı tekrar edebildiği için tekil.
+    CREATE TABLE IF NOT EXISTS wa_cloud_messages (
+      wamid TEXT PRIMARY KEY,
+      direction TEXT NOT NULL,          -- in (müşteriden) | out (bizden)
+      contact TEXT NOT NULL,            -- müşterinin numarası (90XXXXXXXXXX)
+      ts INTEGER NOT NULL,              -- unix saniye
+      type TEXT,
+      body TEXT,
+      status TEXT,                      -- sent | delivered | read | failed (giden mesajlar)
+      source TEXT,                      -- webhook | echo | history | api
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_cloud_messages_contact ON wa_cloud_messages(contact, ts);
+
+    -- Telefondaki WhatsApp Business rehberinden gelen kişiler (smb_app_state_sync) ve
+    -- mesaj atanların profil adları.
+    CREATE TABLE IF NOT EXISTS wa_cloud_contacts (
+      phone TEXT PRIMARY KEY,
+      name TEXT,
+      updated_at TEXT
+    );
+
+    -- Meta'dan gelen ham webhook'lar (son 500). Yeni/tanınmayan alanları incelemek için.
+    CREATE TABLE IF NOT EXISTS wa_cloud_webhook_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      received_at TEXT DEFAULT (datetime('now','localtime')),
+      field TEXT,
+      payload TEXT
+    );
+
     -- Telegram "yakınımdaki müşteriler": bir konum paylaşıldığında bulunan tüm
     -- sonuçlar burada saklanır. "devam" denince aynıları tekrar gönderilmesin diye
     -- kaç tanesinin gönderildiği (sent) tutulur. Her chat için tek kayıt.
