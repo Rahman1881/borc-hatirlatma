@@ -8,4 +8,7 @@ export async function register() {
   // Müşteri Bulucu → Yeni İşletmeler: haftalık otomatik tarama.
   const { startProspectScheduler } = await import("@/lib/prospect-watch");
   startProspectScheduler();
+  // Zam/İndirim Tahmini: sabah pompa fiyatı kontrolü + eksik veri hatırlatması.
+  const { startForecastScheduler } = await import("@/lib/fuel-forecast");
+  startForecastScheduler();
 }

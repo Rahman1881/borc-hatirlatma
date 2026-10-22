@@ -138,6 +138,18 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
+    -- Zam/İndirim Tahmini: Akdeniz ürün fiyatları (TradingView'dan elle girilir, $/ton)
+    -- ve o günün TCMB dolar satış kuru. z6 = ULSD 10ppm CIF MED (motorin),
+    -- a3g = Premium Unleaded 10ppm FOB MED (benzin); ikisi de ikinci ay kontratı.
+    CREATE TABLE IF NOT EXISTS market_quotes (
+      tarih TEXT PRIMARY KEY,     -- YYYY-MM-DD (kapanış günü)
+      z6 REAL,
+      a3g REAL,
+      usd REAL NOT NULL,
+      entered_by TEXT,            -- Telegram chat_id ya da "portal"
+      entered_at INTEGER NOT NULL
+    );
+
     -- Müşteri Bulucu → "Yeni İşletmeler" takibi. Seçilen ildeki seçili türlerin Google
     -- Haritalar kimlikleri haftalık (ücretsiz "IDs Only") taramayla toplanır; önceki
     -- taramada olmayan kimlik "yeni" sayılır. Google kuralları gereği kimlikler süresiz

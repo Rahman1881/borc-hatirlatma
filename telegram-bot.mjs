@@ -221,6 +221,25 @@ async function fetchPlate(query) {
   }
 }
 
+// Zam/İndirim Tahmini: Akdeniz fiyatı girişi ("z6 1025,3 a3g 985,3") ya da /piyasa.
+// Kayıt, hesap ve rapor alanlara gönderim sunucu tarafında yapılır. En az 3 karakterli
+// sayı aranır ki "motorin 5 litre ne kadar" gibi sorular giriş sanılmasın.
+function looksLikeMarketEntry(lower) {
+  return /^\/(piyasa|zam)$/.test(lower) || /^(z6|a3g|motorin|benzin)(2!?)?\s*[:=]?\s*\d[\d.,]{2}/.test(lower);
+}
+
+async function answerMarket(chatId, text) {
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  let reply;
+  try {
+    const d = await apiPost("/api/ai/telegram/piyasa", { chatId: String(chatId), text });
+    reply = d.text || "Piyasa girişi işlenemedi.";
+  } catch {
+    reply = "Piyasa girişi işlenemedi (sunucuya ulaşılamadı).";
+  }
+  await sendMessage(chatId, reply, "HTML");
+}
+
 // Mesaj tek başına bir plaka mı? ("54 ABC 123", "54abc123", "54-ABC-123")
 // Yalnız harf/rakam/boşluk/tireden oluşan kısa metinler denenir ki normal
 // sorular yanlışlıkla plaka sanılmasın.
@@ -257,6 +276,9 @@ Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
 
 🚗 <b>Plaka sorgusu:</b> Sadece plakayı yazın (ör. <code>54 ABC 123</code>).
 Müşterinin yeni mi olduğunu, en son ne zaman geldiğini hemen görürsünüz.
+
+📈 <b>Zam/İndirim Tahmini:</b> Her sabah TradingView'dan dünkü Akdeniz fiyatlarını yazın
+(ör. <code>z6 1025,3 a3g 985,3</code>). Durum için /piyasa
 
 Komutlar:
 /rapor — Günlük satış raporu
@@ -327,6 +349,10 @@ async function handleMessage(msg) {
   }
   if (lower === "/yakin" || lower === "/yakın" || lower === "yakin" || lower === "yakın") {
     await requestLocation(chatId);
+    return;
+  }
+  if (looksLikeMarketEntry(lower)) {
+    await answerMarket(chatId, text);
     return;
   }
   if (lower === "/plaka") {

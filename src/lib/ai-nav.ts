@@ -6,6 +6,7 @@ import {
   Settings,
   Fuel,
   BarChart3,
+  TrendingUp,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +41,12 @@ export const aiNavItems: AiNavItem[] = [
     label: "Rekabet Analizi",
     description: "Çevredeki istasyon fiyatları ve kıyas",
     icon: Fuel,
+  },
+  {
+    href: "/ai/zam-tahmini",
+    label: "Zam Tahmini",
+    description: "Akdeniz fiyatına göre zam/indirim uyarısı",
+    icon: TrendingUp,
   },
   {
     href: "/ai/satis-raporu",
