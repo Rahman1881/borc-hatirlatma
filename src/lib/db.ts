@@ -138,6 +138,53 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
+    -- Müşteri Bulucu → "Yeni İşletmeler" takibi. Seçilen ildeki seçili türlerin Google
+    -- Haritalar kimlikleri haftalık (ücretsiz "IDs Only") taramayla toplanır; önceki
+    -- taramada olmayan kimlik "yeni" sayılır. Google kuralları gereği kimlikler süresiz
+    -- saklanabilir, işletme ayrıntıları (prospect_new.details) en fazla 30 gün tutulur.
+    CREATE TABLE IF NOT EXISTS prospect_seen (
+      place_id TEXT NOT NULL,
+      il TEXT NOT NULL,
+      first_seen INTEGER NOT NULL,      -- ms
+      last_seen INTEGER NOT NULL,       -- ms
+      PRIMARY KEY (place_id, il)
+    );
+    -- Hangi (il, tür) için temel liste çıkarıldı. Temel listesi olmayan türün bulduğu
+    -- kimlikler "yeni" sayılmaz (yoksa yeni eklenen bir türün tamamı yeni görünürdü).
+    CREATE TABLE IF NOT EXISTS prospect_baselines (
+      il TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      done_at INTEGER NOT NULL,
+      PRIMARY KEY (il, profile)
+    );
+    CREATE TABLE IF NOT EXISTS prospect_scans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      il TEXT NOT NULL,
+      started_by TEXT,                  -- manual | schedule
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      status TEXT NOT NULL,             -- running | done | error
+      progress REAL NOT NULL DEFAULT 0, -- 0..1
+      requests INTEGER NOT NULL DEFAULT 0,
+      found INTEGER NOT NULL DEFAULT 0,
+      new_count INTEGER NOT NULL DEFAULT 0,
+      future_count INTEGER NOT NULL DEFAULT 0,
+      baseline INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS prospect_new (
+      place_id TEXT NOT NULL,
+      il TEXT NOT NULL,
+      scan_id INTEGER NOT NULL,
+      first_seen INTEGER NOT NULL,      -- ms
+      profile TEXT,
+      business_status TEXT,
+      opening_date TEXT,                -- YYYY-MM-DD (yakında açılacaklar)
+      details TEXT,                     -- Lead JSON
+      details_at INTEGER,               -- ms
+      PRIMARY KEY (place_id, il)
+    );
+
     -- WhatsApp resmi API (Cloud API, coexistence): Meta'nın webhook ile gönderdiği
     -- gelen/giden mesajlar, telefondan yazılanlar (echo) ve geçmiş sohbetler. wamid,
     -- Meta'nın mesaj kimliği; geçmiş aktarımı tekrar edebildiği için tekil.

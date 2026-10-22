@@ -82,6 +82,27 @@ type SearchOptions = {
   locationBias?: LocationBias;
 };
 
+// Google'ın yer nesnesini (arama sonucu ya da yer ayrıntısı) ortak biçime çevirir.
+function toPlaceResult(p: Record<string, unknown>): PlaceResult {
+  const displayName = p.displayName as { text?: string } | undefined;
+  const primaryType = p.primaryTypeDisplayName as { text?: string } | undefined;
+  const loc = p.location as { latitude?: number; longitude?: number } | undefined;
+  return {
+    id: String(p.id || ""),
+    name: displayName?.text || "İsimsiz işletme",
+    address: String(p.formattedAddress || ""),
+    phone: String(p.nationalPhoneNumber || p.internationalPhoneNumber || ""),
+    mapsUrl: String(p.googleMapsUri || ""),
+    website: String(p.websiteUri || ""),
+    category: primaryType?.text || "",
+    rating: typeof p.rating === "number" ? p.rating : null,
+    ratingCount: typeof p.userRatingCount === "number" ? p.userRatingCount : null,
+    lat: loc?.latitude ?? null,
+    lng: loc?.longitude ?? null,
+    businessStatus: String(p.businessStatus || ""),
+  };
+}
+
 async function searchTextOnce(
   apiKey: string,
   opts: SearchOptions
@@ -117,30 +138,7 @@ async function searchTextOnce(
   }
 
   const data = await res.json();
-  const places: PlaceResult[] = (data?.places || []).map(
-    (p: Record<string, unknown>) => {
-      const displayName = p.displayName as { text?: string } | undefined;
-      const primaryType = p.primaryTypeDisplayName as
-        | { text?: string }
-        | undefined;
-      const loc = p.location as { latitude?: number; longitude?: number } | undefined;
-      return {
-        id: String(p.id || ""),
-        name: displayName?.text || "İsimsiz işletme",
-        address: String(p.formattedAddress || ""),
-        phone: String(p.nationalPhoneNumber || p.internationalPhoneNumber || ""),
-        mapsUrl: String(p.googleMapsUri || ""),
-        website: String(p.websiteUri || ""),
-        category: primaryType?.text || "",
-        rating: typeof p.rating === "number" ? p.rating : null,
-        ratingCount:
-          typeof p.userRatingCount === "number" ? p.userRatingCount : null,
-        lat: loc?.latitude ?? null,
-        lng: loc?.longitude ?? null,
-        businessStatus: String(p.businessStatus || ""),
-      } as PlaceResult;
-    }
-  );
+  const places: PlaceResult[] = (data?.places || []).map(toPlaceResult);
 
   return { places, nextPageToken: data?.nextPageToken };
 }
@@ -203,3 +201,125 @@ export async function searchPlacesNear(
   });
   return places;
 }
+
+// ---------------------------------------------------------------------------
+// "Yeni İşletmeler" takibi için: sadece kimlik araması + yeni bulunanın ayrıntısı.
+// ---------------------------------------------------------------------------
+
+export type Rect = {
+  low: { latitude: number; longitude: number };
+  high: { latitude: number; longitude: number };
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Kota / geçici sunucu hatalarında birkaç kez bekleyip tekrar dener.
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  let wait = 2000;
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchWithTimeout(url, init);
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      await sleep(wait);
+      wait *= 2;
+      continue;
+    }
+    return res;
+  }
+}
+
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const err = await res.json();
+    return err?.error?.message || JSON.stringify(err);
+  } catch {
+    return res.statusText;
+  }
+}
+
+// Bir dikdörtgen içinde metin sorgusuna uyan işletmelerin YALNIZ kimliklerini döndürür.
+// Alan maskesinde yalnız places.id + nextPageToken olduğu için Google bunu "IDs Only"
+// kademesinden, ücretsiz sayar. "Yakında açılacak" işletmeler de dahil edilir.
+// Google bir aramada en fazla 60 sonuç verir; 60'a ulaşan alan "doymuş" sayılır ve
+// çağıran tarafından daha küçük parçalara bölünmelidir.
+export async function searchIdsInRect(
+  textQuery: string,
+  rect: Rect
+): Promise<{ ids: string[]; requests: number; saturated: boolean }> {
+  const apiKey = getPlacesApiKey();
+  if (!apiKey) throw new Error("Google Places API anahtarı tanımlı değil.");
+
+  const ids: string[] = [];
+  let requests = 0;
+  let pageToken: string | undefined;
+  for (let page = 0; page < 3; page++) {
+    const body: Record<string, unknown> = {
+      textQuery,
+      languageCode: "tr",
+      regionCode: "TR",
+      pageSize: 20,
+      locationRestriction: { rectangle: rect },
+      includeFutureOpeningBusinesses: true,
+    };
+    if (pageToken) body.pageToken = pageToken;
+    const res = await fetchWithRetry(SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "places.id,nextPageToken",
+      },
+      body: JSON.stringify(body),
+    });
+    requests++;
+    if (!res.ok) {
+      throw new Error(`Google Places isteği başarısız (${res.status}): ${await errorDetail(res)}`);
+    }
+    const data = (await res.json()) as { places?: { id?: string }[]; nextPageToken?: string };
+    for (const p of data.places ?? []) if (p.id) ids.push(p.id);
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+    await sleep(300);
+  }
+  return { ids, requests, saturated: ids.length >= 60 };
+}
+
+const DETAIL_FIELDS = [
+  "id",
+  "displayName",
+  "formattedAddress",
+  "nationalPhoneNumber",
+  "internationalPhoneNumber",
+  "location",
+  "primaryTypeDisplayName",
+  "googleMapsUri",
+  "websiteUri",
+  "businessStatus",
+  "rating",
+  "userRatingCount",
+  "openingDate",
+].join(",");
+
+export type PlaceDetail = PlaceResult & { openingDate: string };
+
+// Tek bir işletmenin ayrıntısı (ücretli; yalnız yeni bulunan işletmeler için çağrılır).
+// openingDate yalnız "yakında açılacak" (FUTURE_OPENING) işletmelerde dolu gelir.
+export async function getPlaceDetails(placeId: string): Promise<PlaceDetail> {
+  const apiKey = getPlacesApiKey();
+  if (!apiKey) throw new Error("Google Places API anahtarı tanımlı değil.");
+  const url = `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?languageCode=tr&regionCode=TR`;
+  const res = await fetchWithRetry(url, {
+    method: "GET",
+    headers: { "X-Goog-Api-Key": apiKey, "X-Goog-FieldMask": DETAIL_FIELDS },
+  });
+  if (!res.ok) {
+    throw new Error(`Google Places ayrıntısı alınamadı (${res.status}): ${await errorDetail(res)}`);
+  }
+  const p = (await res.json()) as Record<string, unknown>;
+  const od = p.openingDate as { year?: number; month?: number; day?: number } | undefined;
+  const openingDate =
+    od?.year && od?.month
+      ? `${od.year}-${String(od.month).padStart(2, "0")}-${String(od.day || 1).padStart(2, "0")}`
+      : "";
+  return { ...toPlaceResult(p), openingDate };
+}
+

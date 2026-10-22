@@ -34,6 +34,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toWhatsAppNumber } from "@/lib/phone";
+import YeniIsletmeler from "./YeniIsletmeler";
 
 const iller = ["Sakarya", "Kocaeli", "Düzce"];
 const ilceler: Record<string, string[]> = {
@@ -176,7 +177,7 @@ function waInfo(lead: Lead, related: SavedCustomer[]): WaInfo {
 }
 
 export default function MusteriBulucuPage() {
-  const [tab, setTab] = useState<"leads" | "history" | "saved" | "tenders">("leads");
+  const [tab, setTab] = useState<"leads" | "history" | "saved" | "yeni" | "tenders">("leads");
 
   // arama formu
   const [il, setIl] = useState("Sakarya");
@@ -371,12 +372,12 @@ export default function MusteriBulucuPage() {
     }
   }
 
-  function saveCustomer(l: Lead) {
+  function saveCustomer(l: Lead, region = lastRegion) {
     if (savedIds.has(l.id)) return;
     const sc: SavedCustomer = {
       ...l,
       savedAt: Date.now(),
-      region: lastRegion,
+      region,
       note: "",
       status: "Yeni",
     };
@@ -508,6 +509,9 @@ export default function MusteriBulucuPage() {
               {saved.length}
             </span>
           )}
+        </TabBtn>
+        <TabBtn active={tab === "yeni"} onClick={() => setTab("yeni")} icon={Sparkles}>
+          Yeni İşletmeler
         </TabBtn>
         <TabBtn active={tab === "tenders"} onClick={() => setTab("tenders")} icon={Gavel}>
           İhale Takibi
@@ -810,6 +814,25 @@ export default function MusteriBulucuPage() {
         />
       )}
 
+      {tab === "yeni" && (
+        <YeniIsletmeler
+          groups={groups}
+          // Tarih alanları kayıtlı müşteriye taşınmasın diye ayıklanıyor.
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          renderLead={({ firstSeen, openingDate, ...l }, region, badge) => (
+            <LeadCard
+              key={l.id}
+              lead={l}
+              badge={badge}
+              saved={savedIds.has(l.id)}
+              onSave={() => saveCustomer(l, region)}
+              wa={waFor(l)}
+              onWhatsApp={() => setWaTarget({ lead: l, region })}
+            />
+          )}
+        />
+      )}
+
       {tab === "tenders" && (
         <div className="space-y-4">
           <Panel className="bg-gradient-to-r from-amber-500/10 via-card to-card">
@@ -876,12 +899,14 @@ function LeadCard({
   onSave,
   wa,
   onWhatsApp,
+  badge,
 }: {
   lead: Lead;
   saved: boolean;
   onSave: () => void;
   wa: WaInfo;
   onWhatsApp: () => void;
+  badge?: React.ReactNode;
 }) {
   return (
     <Panel className="flex flex-col transition-colors hover:border-primary/40">
@@ -893,6 +918,7 @@ function LeadCard({
           <div>
             <p className="font-semibold leading-tight">{lead.name}</p>
             <p className="text-xs text-muted-foreground">{lead.sector || lead.profile}</p>
+            {badge && <div className="mt-1">{badge}</div>}
           </div>
         </div>
       </div>
@@ -979,6 +1005,27 @@ function SavedList({
   onUpdate: (id: string, patch: Partial<SavedCustomer>) => void;
   onGoFind: () => void;
 }) {
+  const [statusFilter, setStatusFilter] = useState<SavedCustomer["status"] | "Tümü">("Tümü");
+  const [query, setQuery] = useState("");
+
+  const counts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of saved) m.set(c.status, (m.get(c.status) ?? 0) + 1);
+    return m;
+  }, [saved]);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("tr");
+    const qDigits = q.replace(/\D/g, "");
+    return saved.filter((c) => {
+      if (statusFilter !== "Tümü" && c.status !== statusFilter) return false;
+      if (!q) return true;
+      if ([c.name, c.note, c.address, c.sector, c.profile].some((t) => t?.toLocaleLowerCase("tr").includes(q)))
+        return true;
+      return qDigits.length >= 3 && (c.phone || "").replace(/\D/g, "").includes(qDigits);
+    });
+  }, [saved, statusFilter, query]);
+
   if (saved.length === 0) {
     return (
       <Panel className="py-12 text-center">
@@ -1000,10 +1047,54 @@ function SavedList({
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-1.5">
+          {(["Tümü", ...statusOptions] as const).map((st) => {
+            const n = st === "Tümü" ? saved.length : counts.get(st) ?? 0;
+            const on = statusFilter === st;
+            return (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                disabled={n === 0 && !on}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${
+                  on
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {st} <span className={on ? "opacity-80" : "text-muted-foreground"}>{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative sm:w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="İsim, telefon veya not ara…"
+            className="h-9 w-full rounded-lg border bg-muted/50 pl-8 pr-3 text-sm outline-none focus:border-primary"
+          />
+        </div>
+      </div>
       <p className="text-sm text-muted-foreground">
-        <b className="text-foreground">{saved.length}</b> kayıtlı müşteri · arama/ulaşım için
+        {shown.length === saved.length ? (
+          <>
+            <b className="text-foreground">{saved.length}</b> kayıtlı müşteri · arama/ulaşım için
+          </>
+        ) : (
+          <>
+            <b className="text-foreground">{shown.length}</b> / {saved.length} kayıtlı müşteri gösteriliyor
+          </>
+        )}
       </p>
-      {saved.map((c) => (
+      {shown.length === 0 && (
+        <Panel className="py-8 text-center text-sm text-muted-foreground">
+          Bu filtreye uyan müşteri yok.
+        </Panel>
+      )}
+      {shown.map((c) => (
         <Panel key={c.id} className="transition-colors hover:border-primary/40">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex items-start gap-3">
