@@ -817,9 +817,9 @@ export default function MusteriBulucuPage() {
       {tab === "yeni" && (
         <YeniIsletmeler
           groups={groups}
-          // Tarih alanları kayıtlı müşteriye taşınmasın diye ayıklanıyor.
+          // Tarih ve il alanları kayıtlı müşteriye taşınmasın diye ayıklanıyor.
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          renderLead={({ firstSeen, openingDate, ...l }, region, badge) => (
+          renderLead={({ firstSeen, openingDate, il: _il, ...l }, region, badge) => (
             <LeadCard
               key={l.id}
               lead={l}

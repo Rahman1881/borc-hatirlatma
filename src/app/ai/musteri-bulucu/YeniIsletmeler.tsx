@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Panel, Pill } from "@/components/ai/ui";
-import { Sparkles, Radar, CalendarClock, AlertTriangle, Play, Save } from "lucide-react";
+import { Sparkles, Radar, CalendarClock, AlertTriangle, Play, Save, Pencil, X, Plus } from "lucide-react";
 
-// Müşteri Bulucu → "Yeni İşletmeler" sekmesi. Seçilen ilde seçili türlerin Google
-// Haritalar listesini haftada bir tarar; önceki taramada olmayanları ve "yakında
-// açılacak" işletmeleri gösterir. Kartlar sayfanın kendi kart bileşeniyle çizilir
-// (Kaydet / WhatsApp aynı çalışsın diye) — renderLead ile dışarıdan verilir.
+// Müşteri Bulucu → "Yeni İşletmeler" sekmesi. Takip edilen her ilde seçili türlerin Google
+// Haritalar listesi haftada bir taranır; önceki taramada olmayanlar ve "yakında açılacak"
+// işletmeler listelenir. Birden çok il takip edilebilir; sonuçlar il ve türe göre süzülür.
+// Kartlar sayfanın kendi kart bileşeniyle çizilir (Kaydet / WhatsApp aynı çalışsın diye) —
+// renderLead ile dışarıdan verilir.
 
 export type NewLead = {
   id: string;
@@ -24,6 +25,7 @@ export type NewLead = {
   businessStatus: string;
   profile: string;
   sector: string;
+  il: string;
   firstSeen: number;
   openingDate: string;
 };
@@ -42,21 +44,29 @@ type ScanRow = {
   error: string | null;
 };
 
-type WatchData = {
-  config: { il: string; profiles: string[]; enabled: boolean };
-  placesConfigured: boolean;
-  running: boolean;
+type IlStatus = {
+  il: string;
+  profiles: string[];
   last: ScanRow | null;
   lastDone: ScanRow | null;
   seenCount: number;
   nextAt: number | null;
+};
+
+type WatchData = {
+  enabled: boolean;
+  placesConfigured: boolean;
+  running: boolean;
+  runningIl: string | null;
+  watches: IlStatus[];
+  iller: string[];
+  defaultProfiles: string[];
   items: { future: NewLead[]; recent: NewLead[] };
   error?: string;
 };
 
 type ProfileGroup = { group: string; profiles: string[] };
 
-const ILLER = ["Sakarya", "Kocaeli", "Düzce"];
 const TR_MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 
 function fmtDate(ms: number): string {
@@ -78,6 +88,25 @@ function fmtOpening(iso: string): string {
   return `${day} ${TR_MONTHS[m - 1]} ${y} (${rel})`;
 }
 
+function count<T>(arr: T[], key: (x: T) => string): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const x of arr) m.set(key(x), (m.get(key(x)) ?? 0) + 1);
+  return m;
+}
+
+function FilterChip({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+        on ? "border-primary bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function YeniIsletmeler({
   groups,
   renderLead,
@@ -86,23 +115,24 @@ export default function YeniIsletmeler({
   renderLead: (lead: NewLead, region: string, badge: React.ReactNode) => React.ReactNode;
 }) {
   const [data, setData] = useState<WatchData | null>(null);
-  const [il, setIl] = useState("Sakarya");
+  // Düzenleme formu: seçili il ve türleri.
+  const [il, setIl] = useState("");
   const [profiles, setProfiles] = useState<string[]>([]);
-  const [enabled, setEnabled] = useState(true);
-  const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Liste süzgeçleri.
+  const [ilFilter, setIlFilter] = useState("Tümü");
+  const [turFilter, setTurFilter] = useState("Tümü");
 
-  const apply = useCallback((d: WatchData, resetForm: boolean) => {
-    setData(d);
-    if (resetForm) {
-      setIl(d.config.il);
-      setProfiles(d.config.profiles);
-      // İlk taramadan önce haftalık takip varsayılan olarak açık gelsin.
-      setEnabled(d.lastDone ? d.config.enabled : true);
-      setDirty(false);
-    }
-  }, []);
+  const watchOf = useCallback((d: WatchData | null, x: string) => d?.watches.find((w) => w.il === x), []);
+
+  const pickIl = useCallback(
+    (d: WatchData, x: string) => {
+      setIl(x);
+      setProfiles(watchOf(d, x)?.profiles ?? d.defaultProfiles);
+    },
+    [watchOf]
+  );
 
   const load = useCallback(
     (resetForm: boolean) =>
@@ -110,10 +140,15 @@ export default function YeniIsletmeler({
         .then((r) => r.json())
         .then((d: WatchData) => {
           if (d.error) throw new Error(d.error);
-          apply(d, resetForm);
+          setData(d);
+          if (resetForm) {
+            // Takip edilmeyen ilk il ile açılır (yeni il eklemek kolay olsun); hepsi takipteyse ilki.
+            const free = d.iller.find((x) => !d.watches.some((w) => w.il === x));
+            pickIl(d, d.watches.length === 0 ? d.iller[0] : (free ?? d.iller[0]));
+          }
         })
         .catch((err) => setMsg({ ok: false, text: err instanceof Error ? err.message : "Yüklenemedi." })),
-    [apply]
+    [pickIl]
   );
 
   useEffect(() => {
@@ -135,40 +170,44 @@ export default function YeniIsletmeler({
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || "İşlem başarısız.");
+    setData(d as WatchData);
     return d as WatchData;
   };
 
-  const save = async () => {
+  const run = async (fn: () => Promise<unknown>, okText?: string) => {
     setBusy(true);
     setMsg(null);
     try {
-      apply(await post({ action: "save", il, profiles, enabled }), true);
-      setMsg({ ok: true, text: "Takip ayarları kaydedildi." });
+      await fn();
+      if (okText) setMsg({ ok: true, text: okText });
     } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Kaydedilemedi." });
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "İşlem başarısız." });
     } finally {
       setBusy(false);
     }
   };
 
-  const scan = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      // Kaydedilmemiş değişiklik varsa önce kaydet; tarama kayıtlı ayarla çalışır.
-      if (dirty || !data?.lastDone) await post({ action: "save", il, profiles, enabled: dirty ? enabled : true });
-      apply(await post({ action: "scan" }), true);
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Tarama başlatılamadı." });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const save = (andScan: boolean) =>
+    run(
+      async () => {
+        const isNew = !watchOf(data, il);
+        await post({ action: "save", il, profiles });
+        // İlk kez eklenen il ve "nasılsa ilk tarama gerekecek" durumunda taramayı başlat.
+        if (andScan || isNew) await post({ action: "scan", il });
+        // İlk taramada haftalık takip varsayılan olarak açılsın.
+        if (isNew && !data?.enabled) await post({ action: "enabled", enabled: true });
+      },
+      andScan || !watchOf(data, il) ? undefined : `${il} türleri kaydedildi.`
+    );
 
-  const toggleProfile = (p: string) => {
+  const toggleProfile = (p: string) =>
     setProfiles((ps) => (ps.includes(p) ? ps.filter((x) => x !== p) : [...ps, p]));
-    setDirty(true);
-  };
+
+  const items = data?.items;
+  const filtered = useMemo(() => {
+    const ok = (l: NewLead) => (ilFilter === "Tümü" || l.il === ilFilter) && (turFilter === "Tümü" || l.profile === turFilter);
+    return { future: (items?.future ?? []).filter(ok), recent: (items?.recent ?? []).filter(ok) };
+  }, [items, ilFilter, turFilter]);
 
   if (!data) {
     return (
@@ -178,11 +217,16 @@ export default function YeniIsletmeler({
     );
   }
 
-  const running = data.running;
-  const last = data.last;
-  const lastDone = data.lastDone;
-  const hasBaseline = !!lastDone;
-  const { future, recent } = data.items;
+  const all = [...data.items.future, ...data.items.recent];
+  const ilCounts = count(all, (l) => l.il);
+  // Tür sayıları seçili ile göre.
+  const turCounts = count(
+    all.filter((l) => ilFilter === "Tümü" || l.il === ilFilter),
+    (l) => l.profile
+  );
+  const editing = watchOf(data, il);
+  const anyBaseline = data.watches.some((w) => w.lastDone);
+  const badgeIl = (l: NewLead) => (ilFilter === "Tümü" ? ` · ${l.il}` : "");
 
   return (
     <div className="space-y-6">
@@ -194,10 +238,11 @@ export default function YeniIsletmeler({
           <div>
             <p className="text-sm font-semibold">Yeni İşletmeler</p>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Seçtiğin ilde seçtiğin türlerdeki işletmeler haftada bir Google Haritalar&apos;dan
-              taranır. Bir önceki taramada olmayan işletmeler <b className="text-foreground">yeni</b>{" "}
-              olarak, açılış tarihi belli olanlar <b className="text-foreground">yakında açılacak</b>{" "}
-              olarak listelenir. İlk tarama yalnız başlangıç listesini çıkarır.
+              Takibe aldığın her ilde, seçtiğin türlerdeki işletmeler haftada bir Google Haritalar&apos;dan
+              taranır. Bir önceki taramada olmayanlar <b className="text-foreground">yeni</b>, açılış tarihi belli
+              olanlar <b className="text-foreground">yakında açılacak</b> olarak listelenir. Birden çok il takip
+              edebilirsin; sonuçları aşağıdan il ve türe göre ayırabilirsin. Bir ilin ilk taraması yalnız başlangıç
+              listesini çıkarır.
             </p>
           </div>
         </div>
@@ -211,62 +256,162 @@ export default function YeniIsletmeler({
         </Panel>
       )}
 
-      {/* Takip ayarları */}
+      {/* Takip edilen iller */}
+      <Panel>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm font-semibold">Takip edilen iller</p>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={data.enabled}
+              disabled={busy}
+              onChange={(e) => run(() => post({ action: "enabled", enabled: e.target.checked }))}
+            />
+            Her hafta otomatik tara
+          </label>
+        </div>
+        {data.watches.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Henüz takip edilen il yok. Aşağıdan il ve türleri seçip takibi başlat.
+          </p>
+        ) : (
+          <ul className="mt-3 divide-y rounded-lg border">
+            {data.watches.map((w) => {
+              const isRunning = data.runningIl === w.il;
+              return (
+                <li key={w.il} className="px-3 py-3">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                    <b className="w-20">{w.il}</b>
+                    <span className="text-muted-foreground">{w.profiles.length} tür</span>
+                    <span>
+                      <span className="text-muted-foreground">Takip edilen işletme: </span>
+                      {w.seenCount.toLocaleString("tr-TR")}
+                    </span>
+                    <span>
+                      <span className="text-muted-foreground">Son tarama: </span>
+                      {w.lastDone
+                        ? `${fmtDateTime(w.lastDone.started_at)}${
+                            w.lastDone.baseline
+                              ? " (başlangıç listesi)"
+                              : ` · ${w.lastDone.new_count} yeni, ${w.lastDone.future_count} yakında`
+                          }`
+                        : "henüz yok"}
+                    </span>
+                    {w.nextAt && (
+                      <span>
+                        <span className="text-muted-foreground">Sonraki: </span>
+                        {fmtDate(w.nextAt)}
+                      </span>
+                    )}
+                    <div className="ml-auto flex gap-2">
+                      <button
+                        onClick={() => pickIl(data, w.il)}
+                        className="flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs hover:border-primary/40"
+                      >
+                        <Pencil className="h-3.5 w-3.5" /> Türler
+                      </button>
+                      <button
+                        onClick={() => run(() => post({ action: "scan", il: w.il }))}
+                        disabled={busy || data.running || !data.placesConfigured}
+                        className="flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs hover:border-primary/40 disabled:opacity-50"
+                      >
+                        <Play className="h-3.5 w-3.5" /> Şimdi tara
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`${w.il} takipten çıkarılsın mı? Bulunan işletmeler listede kalır.`))
+                            run(() => post({ action: "remove", il: w.il }));
+                        }}
+                        disabled={busy || isRunning}
+                        className="flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-red-500/40 hover:text-red-500 disabled:opacity-50"
+                      >
+                        <X className="h-3.5 w-3.5" /> Takipten çıkar
+                      </button>
+                    </div>
+                  </div>
+                  {isRunning && w.last && (
+                    <div className="mt-2">
+                      <div className="mb-1 flex items-center gap-2 text-xs font-medium">
+                        <Radar className="h-3.5 w-3.5 animate-spin text-primary [animation-duration:2.5s]" />
+                        {w.lastDone ? "Tarama sürüyor" : "İlk tarama sürüyor"} · %{Math.round(w.last.progress * 100)} ·
+                        Google&apos;a {w.last.requests} istek · sayfadan çıkabilirsin
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all"
+                          style={{ width: `${Math.max(2, w.last.progress * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {!isRunning && w.last?.status === "error" && (
+                    <p className="mt-2 flex items-start gap-1.5 text-xs text-red-600">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      Son tarama tamamlanamadı: {w.last.error}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Panel>
+
+      {/* İl ekle / türleri düzenle */}
       <Panel>
         <div className="flex flex-wrap items-end gap-4">
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium text-muted-foreground">İl</span>
             <select
               value={il}
-              onChange={(e) => {
-                setIl(e.target.value);
-                setDirty(true);
-              }}
+              onChange={(e) => pickIl(data, e.target.value)}
               className="h-10 rounded-lg border bg-muted/50 px-3 text-sm outline-none focus:border-primary"
             >
-              {ILLER.map((x) => (
+              {data.iller.map((x) => (
                 <option key={x} value={x}>
                   {x}
+                  {watchOf(data, x) ? " (takipte)" : ""}
                 </option>
               ))}
             </select>
           </label>
-          <label className="flex h-10 items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => {
-                setEnabled(e.target.checked);
-                setDirty(true);
-              }}
-            />
-            Her hafta otomatik tara
-          </label>
+          <p className="pb-2.5 text-sm text-muted-foreground">
+            {editing ? `${il} takipte — türlerini değiştirebilirsin.` : `${il} henüz takipte değil.`}
+          </p>
           <div className="ml-auto flex gap-2">
-            {dirty && hasBaseline && (
+            {editing ? (
+              <>
+                <button
+                  onClick={() => save(false)}
+                  disabled={busy || profiles.length === 0}
+                  className="flex h-10 items-center gap-1.5 rounded-lg border px-4 text-sm font-medium hover:border-primary/40 disabled:opacity-50"
+                >
+                  <Save className="h-4 w-4" /> Kaydet
+                </button>
+                <button
+                  onClick={() => save(true)}
+                  disabled={busy || data.running || !data.placesConfigured || profiles.length === 0}
+                  className="flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  <Play className="h-4 w-4" /> Kaydet ve tara
+                </button>
+              </>
+            ) : (
               <button
-                onClick={save}
-                disabled={busy || running}
-                className="flex h-10 items-center gap-1.5 rounded-lg border px-4 text-sm font-medium hover:border-primary/40 disabled:opacity-50"
+                onClick={() => save(true)}
+                disabled={busy || data.running || !data.placesConfigured || profiles.length === 0}
+                className="flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                <Save className="h-4 w-4" /> Kaydet
+                <Plus className="h-4 w-4" /> Takibe ekle (ilk tarama)
               </button>
             )}
-            <button
-              onClick={scan}
-              disabled={busy || running || !data.placesConfigured || profiles.length === 0}
-              className="flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              <Play className="h-4 w-4" />
-              {hasBaseline ? "Şimdi tara" : "Takibi başlat (ilk tarama)"}
-            </button>
           </div>
         </div>
 
         <div className="mt-4">
           <p className="mb-2 text-xs font-medium text-muted-foreground">
-            Takip edilen türler ({profiles.length}) · yeni eklenen bir tür ilk taramasında başlangıç
-            listesine alınır, yenileri bir sonraki taramadan itibaren görünür
+            {il} için türler ({profiles.length}) · yeni eklenen bir tür ilk taramasında başlangıç listesine alınır,
+            yenileri bir sonraki taramadan itibaren görünür
           </p>
           <div className="space-y-2">
             {groups.map((gr) => (
@@ -292,75 +437,73 @@ export default function YeniIsletmeler({
             ))}
           </div>
         </div>
-
+        {data.running && data.runningIl !== il && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {data.runningIl} taraması bitince yeni tarama başlatılabilir.
+          </p>
+        )}
         {msg && (
           <p className={`mt-3 text-sm font-medium ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>
         )}
       </Panel>
 
-      {/* Durum */}
-      <Panel>
-        {running && last ? (
-          <div>
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-              <Radar className="h-4 w-4 animate-spin text-primary [animation-duration:2.5s]" />
-              {last.baseline || !hasBaseline ? "İlk tarama sürüyor" : "Tarama sürüyor"} · %
-              {Math.round(last.progress * 100)}
+      {/* Süzgeçler */}
+      {all.length > 0 && (
+        <Panel>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="w-12 text-xs text-muted-foreground">İl</span>
+              <FilterChip on={ilFilter === "Tümü"} onClick={() => setIlFilter("Tümü")}>
+                Tümü {all.length}
+              </FilterChip>
+              {[...ilCounts.entries()].map(([x, n]) => (
+                <FilterChip
+                  key={x}
+                  on={ilFilter === x}
+                  onClick={() => {
+                    setIlFilter(x);
+                    setTurFilter("Tümü");
+                  }}
+                >
+                  {x} {n}
+                </FilterChip>
+              ))}
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-muted">
-              <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${Math.max(2, last.progress * 100)}%` }} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="w-12 text-xs text-muted-foreground">Tür</span>
+              <FilterChip on={turFilter === "Tümü"} onClick={() => setTurFilter("Tümü")}>
+                Tümü
+              </FilterChip>
+              {[...turCounts.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .map(([x, n]) => (
+                  <FilterChip key={x} on={turFilter === x} onClick={() => setTurFilter(x)}>
+                    {x} {n}
+                  </FilterChip>
+                ))}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Arka planda ilerliyor; sayfadan çıkabilirsin. Google&apos;a {last.requests} istek yapıldı.
-            </p>
           </div>
-        ) : (
-          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-            <span>
-              <span className="text-muted-foreground">Takip edilen işletme: </span>
-              <b>{data.seenCount.toLocaleString("tr-TR")}</b>
-            </span>
-            <span>
-              <span className="text-muted-foreground">Son tarama: </span>
-              {lastDone ? (
-                <>
-                  {fmtDateTime(lastDone.started_at)}
-                  {lastDone.baseline ? " (başlangıç listesi)" : ` · ${lastDone.new_count} yeni, ${lastDone.future_count} yakında`}
-                </>
-              ) : (
-                "henüz yok"
-              )}
-            </span>
-            {data.nextAt && (
-              <span>
-                <span className="text-muted-foreground">Sonraki otomatik tarama: </span>
-                {fmtDate(data.nextAt)}
-              </span>
-            )}
-          </div>
-        )}
-        {!running && last?.status === "error" && (
-          <p className="mt-3 flex items-start gap-1.5 text-sm text-red-600">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            Son tarama tamamlanamadı: {last.error}
-          </p>
-        )}
-      </Panel>
+        </Panel>
+      )}
 
       {/* Listeler */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <CalendarClock className="h-4 w-4 text-muted-foreground" />
           <p className="text-sm font-semibold">Yakında açılacak</p>
-          <Pill tone="warning">{future.length}</Pill>
+          <Pill tone="warning">{filtered.future.length}</Pill>
         </div>
-        {future.length === 0 ? (
+        {filtered.future.length === 0 ? (
           <Panel className="py-6 text-center text-sm text-muted-foreground">
-            Şu an açılış tarihi belli yeni bir işletme yok.
+            {all.length > 0 && data.items.future.length > 0
+              ? "Bu süzgece uyan yakında açılacak işletme yok."
+              : "Şu an açılış tarihi belli yeni bir işletme yok."}
           </Panel>
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {future.map((l) => renderLead(l, data.config.il, <Pill tone="warning">🔜 Açılış: {fmtOpening(l.openingDate)}</Pill>))}
+            {filtered.future.map((l) =>
+              renderLead(l, l.il, <Pill tone="warning">🔜 Açılış: {fmtOpening(l.openingDate)}{badgeIl(l)}</Pill>)
+            )}
           </div>
         )}
       </div>
@@ -369,17 +512,21 @@ export default function YeniIsletmeler({
         <div className="mb-3 flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-muted-foreground" />
           <p className="text-sm font-semibold">Yeni eklenenler (son 30 gün)</p>
-          <Pill tone="primary">{recent.length}</Pill>
+          <Pill tone="primary">{filtered.recent.length}</Pill>
         </div>
-        {recent.length === 0 ? (
+        {filtered.recent.length === 0 ? (
           <Panel className="py-6 text-center text-sm text-muted-foreground">
-            {hasBaseline
-              ? "Son 30 günde yeni işletme görülmedi. Bir sonraki taramada tekrar bakılacak."
-              : "İlk tarama başlangıç listesini çıkarır; yeni işletmeler bir sonraki taramadan itibaren burada görünür."}
+            {data.items.recent.length > 0
+              ? "Bu süzgece uyan yeni işletme yok."
+              : anyBaseline
+                ? "Son 30 günde yeni işletme görülmedi. Bir sonraki taramada tekrar bakılacak."
+                : "Bir ilin ilk taraması başlangıç listesini çıkarır; yeni işletmeler bir sonraki taramadan itibaren burada görünür."}
           </Panel>
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {recent.map((l) => renderLead(l, data.config.il, <Pill tone="primary">🆕 İlk görüldü: {fmtDate(l.firstSeen)}</Pill>))}
+            {filtered.recent.map((l) =>
+              renderLead(l, l.il, <Pill tone="primary">🆕 İlk görüldü: {fmtDate(l.firstSeen)}{badgeIl(l)}</Pill>)
+            )}
           </div>
         )}
       </div>
