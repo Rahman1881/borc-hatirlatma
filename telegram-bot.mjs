@@ -221,21 +221,20 @@ async function fetchPlate(query) {
   }
 }
 
-// Zam/İndirim Tahmini: Akdeniz fiyatı girişi ("z6 1025,3 a3g 985,3") ya da /piyasa.
-// Kayıt, hesap ve rapor alanlara gönderim sunucu tarafında yapılır. En az 3 karakterli
-// sayı aranır ki "motorin 5 litre ne kadar" gibi sorular giriş sanılmasın.
-function looksLikeMarketEntry(lower) {
-  return /^\/(piyasa|zam)$/.test(lower) || /^(z6|a3g|motorin|benzin)(2!?)?\s*[:=]?\s*\d[\d.,]{2}/.test(lower);
+// Zam/İndirim Tahmini: /piyasa (ya da /zam) ile güncel durum. Piyasa verisi sunucu
+// tarafından otomatik çekilir; günlük tahmin rapor alanlara kendiliğinden gider.
+function looksLikeMarketCommand(lower) {
+  return /^\/(piyasa|zam)$/.test(lower);
 }
 
-async function answerMarket(chatId, text) {
+async function answerMarket(chatId) {
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
   let reply;
   try {
-    const d = await apiPost("/api/ai/telegram/piyasa", { chatId: String(chatId), text });
-    reply = d.text || "Piyasa girişi işlenemedi.";
+    const d = await apiPost("/api/ai/telegram/piyasa", {});
+    reply = d.text || "Zam tahmini hazırlanamadı.";
   } catch {
-    reply = "Piyasa girişi işlenemedi (sunucuya ulaşılamadı).";
+    reply = "Zam tahmini hazırlanamadı (sunucuya ulaşılamadı).";
   }
   await sendMessage(chatId, reply, "HTML");
 }
@@ -277,9 +276,8 @@ Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
 🚗 <b>Plaka sorgusu:</b> Sadece plakayı yazın (ör. <code>54 ABC 123</code>).
 Müşterinin yeni mi olduğunu, en son ne zaman geldiğini hemen görürsünüz.
 
-📈 <b>Zam/İndirim Tahmini:</b> Akdeniz fiyatlarını TradingView'dan yazın
-(ör. <code>z6 1025,3 a3g 985,3</code>). En erken tahmin için gece ~22:00–23:00
-sonrası, olmazsa sabah. Durum için /piyasa
+📈 <b>Zam/İndirim Tahmini:</b> Her iş günü akşam (~18:45, kışın ~19:45) otomatik gelir.
+Güncel durum için /piyasa
 
 Komutlar:
 /rapor — Günlük satış raporu
@@ -352,8 +350,8 @@ async function handleMessage(msg) {
     await requestLocation(chatId);
     return;
   }
-  if (looksLikeMarketEntry(lower)) {
-    await answerMarket(chatId, text);
+  if (looksLikeMarketCommand(lower)) {
+    await answerMarket(chatId);
     return;
   }
   if (lower === "/plaka") {

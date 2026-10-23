@@ -138,16 +138,25 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
-    -- Zam/İndirim Tahmini: Akdeniz ürün fiyatları (TradingView'dan elle girilir, $/ton)
-    -- ve o günün TCMB dolar satış kuru. z6 = ULSD 10ppm CIF MED (motorin),
-    -- a3g = Premium Unleaded 10ppm FOB MED (benzin); ikisi de ikinci ay kontratı.
-    CREATE TABLE IF NOT EXISTS market_quotes (
-      tarih TEXT PRIMARY KEY,     -- YYYY-MM-DD (kapanış günü)
-      z6 REAL,
-      a3g REAL,
+    -- Zam/İndirim Tahmini (src/lib/fuel-forecast.ts). market_prices: her iş günü Londra
+    -- 16:30'daki ABD motorin (HO) / benzin (RB) vadelisi ($/galon, Yahoo) ve TCMB kuru;
+    -- kontrat değişince seri zincirlenir. pump_prices: Opet Serdivan arşivinden yalnız
+    -- fiyatın değiştiği günler (gerçekleşen zam/indirimler).
+    CREATE TABLE IF NOT EXISTS market_prices (
+      tarih TEXT PRIMARY KEY,     -- YYYY-MM-DD (Londra işlem günü)
+      ho REAL,
+      ho_kontrat TEXT,            -- ör. HOX26.NYM
+      rb REAL,
+      rb_kontrat TEXT,
+      brent REAL,                 -- bilgi amaçlı ($/varil)
       usd REAL NOT NULL,
-      entered_by TEXT,            -- Telegram chat_id ya da "portal"
-      entered_at INTEGER NOT NULL
+      fetched_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pump_prices (
+      tarih TEXT NOT NULL,
+      yakit TEXT NOT NULL,        -- motorin | benzin
+      fiyat REAL NOT NULL,
+      PRIMARY KEY (tarih, yakit)
     );
 
     -- Müşteri Bulucu → "Yeni İşletmeler" takibi. Seçilen ildeki seçili türlerin Google

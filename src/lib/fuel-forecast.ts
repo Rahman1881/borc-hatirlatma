@@ -1,20 +1,22 @@
 import getDb from "@/lib/db";
-import { ensureDailyPrices } from "@/lib/fuel-prices";
 import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 
-// Zam/İndirim Tahmini. Türkiye'de rafineri fiyatı Akdeniz ürün fiyatı (Platts CIF MED,
-// $/ton) × TCMB dolar kuruyla oluşur; son değişiklikten beri bu maliyet belli bir
-// oranı (sektörde konuşulan ~%3) aşınca pompaya zam ya da indirim gelir. Resmi bir
-// formül yayınlanmadığı için eşik ve ortalama gün sayısı ayardır; gerçekleşen
-// değişikliklerle (Petrol Ofisi günlük fiyatları) karşılaştırılarak ayarlanır.
+// Zam/İndirim Tahmini. Türkiye'de rafineri fiyatı Akdeniz ürün fiyatı (Platts) × TCMB
+// dolar kuruyla oluşur; son değişiklikten beri bu maliyet belli bir oranı aşınca pompaya
+// zam ya da indirim gelir. Resmi formül yayınlanmadığı için eşik ve ortalama ayardır.
 //
-// Veri: TradingView'daki ücretsiz NYMEX kontratları — motorin NYMEX:Z62! (ULSD 10ppm
-// Cargoes CIF MED), benzin NYMEX:A3G2! (Premium Unleaded 10ppm FOB MED). Otomatik çekmek
-// kullanım şartlarına aykırı olduğundan günde bir kez Telegram'dan ya da portaldan elle
-// girilir; kur TCMB'den otomatik alınır. İkinci ay kontratı kullanılır: önündeki ay
-// kontratı ay boyunca ortalamaya sabitlendiği için ay sonunda neredeyse kıpırdamaz.
-// İkinci ay kontratı ay başında bir sonrakine geçer; o geçişteki sıçrama piyasa hareketi
-// olmadığından seri ay değişiminde zincirlenir (o günün oranı 1 sayılır).
+// Veri (otomatik, ücretsiz):
+//  • Piyasa: Yahoo Finance'ten ABD motorin (NYMEX Heating Oil) ve benzin (RBOB) vadelileri,
+//    her iş günü Londra 16:30'daki fiyat — Platts/ICE Avrupa kapanışıyla aynı an. Platts
+//    ücretli; TradingView'daki Platts kontratları (Z6/A3G) işlem görmediği için günlerce
+//    aynı kalıyor. ABD motorini Avrupa motoriniyle sıkı bağlı; 2023–2026 geçmiş testinde
+//    (FRED spot + Opet değişiklikleri) motorinde en iyi sonuç bununla alındı.
+//  • Kur: TCMB günlük dolar satış kuru.
+//  • Gerçekleşen değişiklikler: Opet'in Serdivan fiyat arşivi (yalnız değişiklik günleri).
+//
+// Kontrat: her ay bir sonraki ayın kontratı (Ekim'de Kasım). Yahoo'nun sürekli serisi
+// (HO=F) geçişi vadeden önce rastgele yaptığı ve aylar arası fark büyük olduğu için
+// kullanılmaz; kontrat değişince seri zincirlenir (o günün oranı 1 sayılır).
 
 export type Fuel = "motorin" | "benzin";
 export type Level = "zam" | "zam_yakin" | "notr" | "indirim_yakin" | "indirim";
@@ -23,37 +25,40 @@ export type ForecastConfig = {
   enabled: boolean;
   esikPct: number; // rafinerinin fiyat değiştirdiği sapma (%)
   ortalamaGun: number; // kaç kapanışın ortalaması alınır
-  yogunlukMotorin: number; // kg/litre
-  yogunlukBenzin: number;
+  // Pompaya yansıyan / hesaplanan TL oranı. Geçmiş testten: motorin ~1,3, benzin ~0,95.
+  katsayiMotorin: number;
+  katsayiBenzin: number;
   eselPay: number; // eşel mobil: değişimin devletin ÖTV'den karşıladığı payı (%)
   gunlukDurum: boolean; // her gün durum gönder (kapalıysa yalnız uyarılar)
-  geceHatirlatma: boolean; // kapanış TradingView'a düşünce (gece) hatırlat
   yoksay: string[]; // baz sayılmayacak pompa değişiklikleri: "YYYY-MM-DD|yakit"
 };
 
+// Geçmiş test (2023-03 → 2026-10): 3 kapanış ortalaması, %3 eşik → motorinde alarmların
+// ~%67'si 5 iş günü içinde aynı yönde değişiklikle sonuçlandı, ortalama ~2,8 iş günü önce.
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   enabled: true,
   esikPct: 3,
-  ortalamaGun: 5,
-  yogunlukMotorin: 0.84,
-  yogunlukBenzin: 0.75,
+  ortalamaGun: 3,
+  katsayiMotorin: 1.3,
+  katsayiBenzin: 0.95,
   eselPay: 0,
   gunlukDurum: true,
-  geceHatirlatma: true,
   yoksay: [],
 };
 
-export type QuoteRow = {
-  tarih: string;
-  z6: number | null;
-  a3g: number | null;
+export type PriceRow = {
+  tarih: string; // Londra işlem günü
+  ho: number | null; // $/galon
+  ho_kontrat: string | null;
+  rb: number | null;
+  rb_kontrat: string | null;
+  brent: number | null; // $/varil (bilgi)
   usd: number;
-  entered_by: string | null;
-  entered_at: number;
+  fetched_at: number;
 };
 
 export type PumpChange = {
-  tarih: string; // yeni fiyatın ilk görüldüğü gün
+  tarih: string; // yeni fiyatın geçerli olduğu gün
   yakit: Fuel;
   eski: number;
   yeni: number;
@@ -63,14 +68,15 @@ export type PumpChange = {
 
 export type FuelRow = {
   tarih: string;
-  raw: number; // $/ton
+  raw: number; // $/galon
+  kontrat: string;
   usd: number;
   pct: number; // son değişiklikteki baza göre sapma (%)
   tl: number; // pompaya yansıması beklenen TL/litre (KDV dahil)
   level: Level;
   change: PumpChange | null; // hesaba esas son pompa değişikliği
   baseTarih: string;
-  calibrating: boolean; // değişiklikten önceki veri yok; baz ilk girilen gün
+  calibrating: boolean; // değişiklikten önceki piyasa verisi yok; baz ilk gün
 };
 
 export type FuelCalc = {
@@ -81,20 +87,20 @@ export type FuelCalc = {
   changes: (PumpChange & { estimate: FuelRow | null })[];
 };
 
-const FUELS: { key: Fuel; col: "z6" | "a3g"; label: string; icon: string; symbol: string }[] = [
-  { key: "motorin", col: "z6", label: "Motorin", icon: "🛢", symbol: "Z62!" },
-  { key: "benzin", col: "a3g", label: "Benzin", icon: "⛽", symbol: "A3G2!" },
-];
+const FUELS = [
+  { key: "motorin", col: "ho", kcol: "ho_kontrat", root: "HO", label: "Motorin", icon: "🛢" },
+  { key: "benzin", col: "rb", kcol: "rb_kontrat", root: "RB", label: "Benzin", icon: "⛽" },
+] as const;
 
-const STATION = { il: "Sakarya", ilce: "Serdivan", plaka: 54 };
+const OPET = { il: 54, ilce: "054017", ad: "Opet Serdivan" };
 // Bu tutarın altındaki pompa farkları dağıtıcı/bayi marjı oynamasıdır, rafineri
 // değişikliği sayılmaz (baz sıfırlanmaz).
 const MIN_PUMP_CHANGE = 0.3;
-// Elle girilen fiyat için akla yatkın aralık ($/ton) — yanlış yazımı yakalamak için.
-const MIN_PRICE = 200;
-const MAX_PRICE = 3000;
-// Önceki kapanışa göre bundan büyük fark yazım hatası olabilir; uyarılır.
-const JUMP_WARN = 0.12;
+const LITRE_PER_GALLON = 3.78541;
+const SNAPSHOT_LONDON = 16 * 60 + 30; // Platts/ICE kapanışı (Londra saati)
+const FETCH_AFTER_LONDON = 16 * 60 + 45; // Yahoo vadeli verisi ~10 dk gecikmeli
+const GIVE_UP_LONDON = 22 * 60; // bu saate kadar veri gelmezse o gün uyarılır
+const BACKFILL_DAYS = 45; // ilk kurulumda geriye dönük doldurulan gün (Yahoo 15 dk verisi 60 gün)
 
 // --- Ayarlar --------------------------------------------------------------
 
@@ -108,9 +114,11 @@ function setSetting(key: string, value: string): void {
   getDb().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
+const CONFIG_KEY = "fuel_forecast_v2";
+
 export function getForecastConfig(): ForecastConfig {
   try {
-    const raw = getSetting("fuel_forecast");
+    const raw = getSetting(CONFIG_KEY);
     if (raw) return { ...DEFAULT_FORECAST_CONFIG, ...(JSON.parse(raw) as Partial<ForecastConfig>) };
   } catch {
     // bozuksa varsayılan
@@ -122,36 +130,31 @@ export function saveForecastConfig(patch: Partial<ForecastConfig>): ForecastConf
   const cur = getForecastConfig();
   const num = (v: unknown, min: number, max: number, def: number) => {
     const n = Number(v);
-    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+    return v != null && Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
   };
   const next: ForecastConfig = {
     enabled: typeof patch.enabled === "boolean" ? patch.enabled : cur.enabled,
-    esikPct: patch.esikPct != null ? num(patch.esikPct, 0.5, 20, cur.esikPct) : cur.esikPct,
-    ortalamaGun:
-      patch.ortalamaGun != null ? Math.round(num(patch.ortalamaGun, 1, 20, cur.ortalamaGun)) : cur.ortalamaGun,
-    yogunlukMotorin:
-      patch.yogunlukMotorin != null ? num(patch.yogunlukMotorin, 0.6, 1, cur.yogunlukMotorin) : cur.yogunlukMotorin,
-    yogunlukBenzin:
-      patch.yogunlukBenzin != null ? num(patch.yogunlukBenzin, 0.6, 1, cur.yogunlukBenzin) : cur.yogunlukBenzin,
-    eselPay: patch.eselPay != null ? num(patch.eselPay, 0, 100, cur.eselPay) : cur.eselPay,
+    esikPct: num(patch.esikPct, 0.5, 20, cur.esikPct),
+    ortalamaGun: Math.round(num(patch.ortalamaGun, 1, 20, cur.ortalamaGun)),
+    katsayiMotorin: num(patch.katsayiMotorin, 0.1, 5, cur.katsayiMotorin),
+    katsayiBenzin: num(patch.katsayiBenzin, 0.1, 5, cur.katsayiBenzin),
+    eselPay: num(patch.eselPay, 0, 100, cur.eselPay),
     gunlukDurum: typeof patch.gunlukDurum === "boolean" ? patch.gunlukDurum : cur.gunlukDurum,
-    geceHatirlatma: typeof patch.geceHatirlatma === "boolean" ? patch.geceHatirlatma : cur.geceHatirlatma,
     yoksay: Array.isArray(patch.yoksay) ? patch.yoksay.map(String) : cur.yoksay,
   };
-  setSetting("fuel_forecast", JSON.stringify(next));
+  setSetting(CONFIG_KEY, JSON.stringify(next));
   return next;
 }
 
 export function setChangeIgnored(tarih: string, yakit: Fuel, ignored: boolean): ForecastConfig {
   const key = `${tarih}|${yakit}`;
-  const cur = getForecastConfig();
-  const set = new Set(cur.yoksay);
+  const set = new Set(getForecastConfig().yoksay);
   if (ignored) set.add(key);
   else set.delete(key);
   return saveForecastConfig({ yoksay: [...set] });
 }
 
-// --- Tarih yardımcıları (yerel saat) ----------------------------------------
+// --- Tarih yardımcıları ------------------------------------------------------
 
 function isoLocal(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -174,17 +177,17 @@ function prevBusinessDay(iso: string): string {
   while (isWeekend(d)) d = addDays(d, -1);
   return d;
 }
+function businessDays(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) if (!isWeekend(d)) out.push(d);
+  return out;
+}
 
-// CME, NYMEX kapanışlarını New York saatiyle 14:47'den itibaren ön, 19:00'da kesin
-// yayınlar; TradingView ~10 dk gecikmeli gösterir. Türkiye saatine çevirisi ABD yaz/kış
-// saatine göre değiştiği için (yaz ~22:00, kış ~23:00) hesap New York saatiyle yapılır.
-const SETTLE_VISIBLE_NY = 15 * 60; // TradingView'da o günün kapanışının görüneceği an
-const NIGHT_REMIND_NY = 15 * 60 + 30;
-
-function newYorkNow(now: Date): { iso: string; minutes: number } {
+// Verilen saat dilimindeki tarih ve gün içi dakika.
+function zoned(now: Date, timeZone: string): { iso: string; minutes: number } {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/New_York",
+      timeZone,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -198,21 +201,20 @@ function newYorkNow(now: Date): { iso: string; minutes: number } {
   return { iso: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
-// Elle girilen fiyat hangi kapanışa ait sayılır: o günün kapanışı TradingView'a
-// düştüyse (New York 15:00 sonrası) o gün, değilse bir önceki iş günü.
-export function defaultEntryDate(now = new Date()): string {
-  const ny = newYorkNow(now);
-  if (!isWeekend(ny.iso) && ny.minutes >= SETTLE_VISIBLE_NY) return ny.iso;
-  return prevBusinessDay(ny.iso);
+// En son hangi günün Londra kapanışı alınabilir: hafta içi 16:45 sonrası o gün, değilse
+// bir önceki iş günü.
+export function expectedLatestDate(now = new Date()): string {
+  const lon = zoned(now, "Europe/London");
+  if (!isWeekend(lon.iso) && lon.minutes >= FETCH_AFTER_LONDON) return lon.iso;
+  return prevBusinessDay(lon.iso);
 }
 
-// O günün kapanışının Türkiye saatiyle ne zaman görüneceği ("22:00" / "23:00").
-export function settleVisibleTr(now = new Date()): string {
-  const ny = newYorkNow(now);
-  const trMinutes = now.getHours() * 60 + now.getMinutes();
-  let diff = trMinutes - ny.minutes;
+// Verinin Türkiye saatiyle kaçta çekileceği ("18:45"; Avrupa kış saatinde "19:45").
+export function fetchTimeTr(now = new Date()): string {
+  const lon = zoned(now, "Europe/London");
+  let diff = now.getHours() * 60 + now.getMinutes() - lon.minutes;
   if (diff < 0) diff += 24 * 60;
-  const m = (SETTLE_VISIBLE_NY + diff) % (24 * 60);
+  const m = (FETCH_AFTER_LONDON + diff) % (24 * 60);
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
@@ -233,8 +235,9 @@ function fmtPct(n: number): string {
   return n > 0 ? `+${s}` : n < 0 ? `−${s}` : s;
 }
 
-// --- TCMB kuru ---------------------------------------------------------------
+// --- Dış kaynaklar -------------------------------------------------------------
 
+// TCMB günlük kuru; tatil/hafta sonu ise bir önceki yayımlanan kur.
 async function fetchUsdForDate(iso: string): Promise<number | null> {
   const [y, m, d] = iso.split("-");
   const res = await fetch(`https://www.tcmb.gov.tr/kurlar/${y}${m}/${d}${m}${y}.xml`, {
@@ -246,9 +249,6 @@ async function fetchUsdForDate(iso: string): Promise<number | null> {
   const n = hit ? Number(hit[1]) : NaN;
   return Number.isFinite(n) && n > 0 ? n : null;
 }
-
-// O günün TCMB dolar satış kuru; tatil/hafta sonu ya da 15:30 öncesi ise bir önceki
-// yayımlanan kur.
 async function getUsdRate(iso: string): Promise<number> {
   for (let i = 0; i < 8; i++) {
     try {
@@ -261,25 +261,90 @@ async function getUsdRate(iso: string): Promise<number> {
   throw new Error("TCMB dolar kuru alınamadı.");
 }
 
+const MONTH_CODES = "FGHJKMNQUVXZ";
+// Bir günde kullanılacak kontrat: bir sonraki ayın vadelisi (HO/RB, vadesinden önceki
+// ayın son iş günü sona erer; ay boyunca geçerli kalır).
+function contractFor(iso: string, root: string): string {
+  const [y, m] = iso.split("-").map(Number);
+  const dm = m === 12 ? 1 : m + 1;
+  const dy = m === 12 ? y + 1 : y;
+  return `${root}${MONTH_CODES[dm - 1]}${String(dy).slice(2)}.NYM`;
+}
+
+// Yahoo 15 dakikalık verisinden her günün Londra 16:30 fiyatı (son 60 gün). Vadesi geçmiş
+// kontratlar Yahoo'da yok → null.
+async function londonSnapshots(symbol: string): Promise<Map<string, number> | null> {
+  const res = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=60d&interval=15m`,
+    { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20_000) }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Yahoo ${symbol}: HTTP ${res.status}`);
+  const j = (await res.json()) as {
+    chart?: { result?: { timestamp?: number[]; indicators?: { quote?: { close?: (number | null)[] }[] } }[] };
+  };
+  const r = j.chart?.result?.[0];
+  const ts = r?.timestamp;
+  const close = r?.indicators?.quote?.[0]?.close;
+  if (!ts || !close) return null;
+  const out = new Map<string, number>();
+  for (let i = 0; i < ts.length; i++) {
+    const c = close[i];
+    if (c == null) continue;
+    // Çubuk zamanı başlangıçtır; 16:15 çubuğunun kapanışı 16:30 fiyatıdır.
+    const z = zoned(new Date(ts[i] * 1000), "Europe/London");
+    if (z.minutes >= 12 * 60 && z.minutes <= SNAPSHOT_LONDON - 15) out.set(z.iso, c);
+  }
+  return out;
+}
+
+// Opet Serdivan fiyat arşivi: yalnız fiyatın değiştiği günler.
+async function fetchOpetArchive(
+  from: string,
+  to: string
+): Promise<{ tarih: string; benzin?: number; motorin?: number }[]> {
+  const res = await fetch(
+    `https://api.opet.com.tr/api/fuelprices/prices/archive?ProvinceCode=${OPET.il}&DistrictCode=${OPET.ilce}` +
+      `&StartDate=${from}&EndDate=${to}&IncludeAllProducts=true`,
+    { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30_000) }
+  );
+  if (!res.ok) throw new Error(`Opet arşivi: HTTP ${res.status}`);
+  const arr = (await res.json()) as { day: string; prices: { productShortName: string; amount: number }[] }[];
+  return arr.map((d) => {
+    const p = new Map(d.prices.map((x) => [x.productShortName, x.amount]));
+    return {
+      tarih: d.day.slice(0, 10),
+      benzin: p.get("KURS") || undefined,
+      motorin: p.get("MT_ULT") || p.get("MT_ECO") || undefined,
+    };
+  });
+}
+
 // --- Veri ----------------------------------------------------------------------
 
-export function listQuotes(): QuoteRow[] {
-  return getDb().prepare("SELECT * FROM market_quotes ORDER BY tarih ASC").all() as QuoteRow[];
+export function listPrices(): PriceRow[] {
+  return getDb().prepare("SELECT * FROM market_prices ORDER BY tarih ASC").all() as PriceRow[];
 }
 
-export function deleteQuote(tarih: string): void {
-  getDb().prepare("DELETE FROM market_quotes WHERE tarih = ?").run(tarih);
+export async function refreshPumpPrices(days: number): Promise<number> {
+  const today = isoLocal(new Date());
+  const stmt = getDb().prepare("INSERT OR REPLACE INTO pump_prices (tarih, yakit, fiyat) VALUES (?, ?, ?)");
+  let n = 0;
+  for (let from = addDays(today, -days); from <= today; from = addDays(from, 90)) {
+    const end = addDays(from, 89);
+    for (const r of await fetchOpetArchive(from, end < today ? end : today)) {
+      if (r.motorin) stmt.run(r.tarih, "motorin", r.motorin);
+      if (r.benzin) stmt.run(r.tarih, "benzin", r.benzin);
+      n++;
+    }
+  }
+  return n;
 }
 
-// Petrol Ofisi'nin Sakarya pompa fiyatlarından (günlük çekilen) değişiklikler.
 export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
   const rows = getDb()
-    .prepare(
-      `SELECT tarih, yakit, AVG(fiyat) AS fiyat FROM fuel_prices
-       WHERE plaka = ? AND LOWER(marka) LIKE '%petrol ofisi%' AND yakit IN ('motorin', 'benzin')
-       GROUP BY tarih, yakit ORDER BY yakit, tarih`
-    )
-    .all(STATION.plaka) as { tarih: string; yakit: Fuel; fiyat: number }[];
+    .prepare("SELECT tarih, yakit, fiyat FROM pump_prices ORDER BY yakit, tarih")
+    .all() as { tarih: string; yakit: Fuel; fiyat: number }[];
   const ignored = new Set(cfg.yoksay);
   const out: PumpChange[] = [];
   const prev: Partial<Record<Fuel, number>> = {};
@@ -300,6 +365,66 @@ export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
   return out.sort((a, b) => a.tarih.localeCompare(b.tarih));
 }
 
+// Yahoo'dan Londra 16:30 fiyatlarını çekip kaydeder. İlk kurulumda son 45 günü doldurur,
+// sonra her seferinde son ~2 haftayı tazeler.
+export async function refreshMarket(now = new Date()): Promise<{ added: string[]; latest: string }> {
+  const db = getDb();
+  const latest = expectedLatestDate(now);
+  const count = (db.prepare("SELECT COUNT(*) AS n FROM market_prices").get() as { n: number }).n;
+  const days = businessDays(addDays(latest, count < 5 ? -BACKFILL_DAYS : -14), latest);
+
+  // Her yakıt için gereken kontratlar + yedek olarak bugünün kontratı (vadesi geçmiş
+  // kontratların Yahoo'da verisi olmadığından eski günler bununla doldurulur).
+  const snaps = new Map<string, Map<string, number> | null>();
+  for (const f of FUELS) {
+    const need = new Set([...days.map((d) => contractFor(d, f.root)), contractFor(latest, f.root)]);
+    for (const sym of need) if (!snaps.has(sym)) snaps.set(sym, await londonSnapshots(sym));
+  }
+  const brent = await londonSnapshots("BZ=F").catch(() => null);
+
+  const existing = new Map(
+    (db.prepare("SELECT tarih, usd FROM market_prices").all() as { tarih: string; usd: number }[]).map((r) => [
+      r.tarih,
+      r.usd,
+    ])
+  );
+  const upsert = db.prepare(
+    `INSERT OR REPLACE INTO market_prices (tarih, ho, ho_kontrat, rb, rb_kontrat, brent, usd, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const added: string[] = [];
+  for (const d of days) {
+    let usedFallback = false;
+    const vals = FUELS.map((f) => {
+      const natural = contractFor(d, f.root);
+      const v = snaps.get(natural)?.get(d);
+      if (v != null) return { v, k: natural };
+      const fallback = contractFor(latest, f.root);
+      const w = snaps.get(fallback)?.get(d);
+      if (w == null) return null;
+      usedFallback = true;
+      return { v: w, k: fallback };
+    });
+    if (vals.every((x) => x == null)) continue; // tatil ya da veri yok
+    // Kayıtlı bir gün, kendi kontratının verisi artık yoksa (vadesi geçti) olduğu gibi
+    // kalır; geçmiş tahminler sonradan değişmesin.
+    if (usedFallback && existing.has(d)) continue;
+    const usd = existing.get(d) ?? (await getUsdRate(d));
+    upsert.run(
+      d,
+      vals[0]?.v ?? null,
+      vals[0]?.k ?? null,
+      vals[1]?.v ?? null,
+      vals[1]?.k ?? null,
+      brent?.get(d) ?? null,
+      usd,
+      Date.now()
+    );
+    if (!existing.has(d)) added.push(d);
+  }
+  return { added, latest };
+}
+
 // --- Hesap ---------------------------------------------------------------------
 
 function levelOf(pct: number, esik: number): Level {
@@ -315,25 +440,21 @@ function findLastIndex<T>(arr: T[], fn: (x: T) => boolean): number {
   return -1;
 }
 
-function buildFuel(
-  fuel: Fuel,
-  quotes: QuoteRow[],
-  allChanges: PumpChange[],
-  cfg: ForecastConfig
-): FuelCalc {
+function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg: ForecastConfig): FuelCalc {
   const meta = FUELS.find((f) => f.key === fuel)!;
   const n = Math.max(1, Math.round(cfg.ortalamaGun));
-  const dens = fuel === "motorin" ? cfg.yogunlukMotorin : cfg.yogunlukBenzin;
+  const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
 
-  // Zincirlenmiş seri: kontrat ay başında değişince aradaki fark sayılmaz.
-  type Pt = { tarih: string; raw: number; usd: number; idx: number; c: number; avg: number };
+  // Zincirlenmiş seri: kontrat değişince aradaki fark sayılmaz.
+  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number };
   const pts: Pt[] = [];
-  for (const q of quotes) {
+  for (const q of prices) {
     const raw = q[meta.col];
-    if (raw == null) continue;
+    const kontrat = q[meta.kcol];
+    if (raw == null || !kontrat) continue;
     const prev = pts[pts.length - 1];
-    const idx = !prev ? raw : prev.tarih.slice(0, 7) === q.tarih.slice(0, 7) ? (prev.idx * raw) / prev.raw : prev.idx;
-    pts.push({ tarih: q.tarih, raw, usd: q.usd, idx, c: idx * q.usd, avg: 0 });
+    const idx = !prev ? raw : prev.kontrat === kontrat ? (prev.idx * raw) / prev.raw : prev.idx;
+    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0 });
   }
   pts.forEach((p, i) => {
     const win = pts.slice(Math.max(0, i - n + 1), i + 1);
@@ -343,7 +464,7 @@ function buildFuel(
   const changes = allChanges.filter((c) => c.yakit === fuel && !c.ignored);
   const rows: FuelRow[] = pts.map((p) => {
     const ch = changes.filter((c) => c.tarih <= p.tarih).pop() ?? null;
-    // Baz: değişiklik kararından önceki son kapanıştaki ortalama.
+    // Baz: değişiklik gününden önceki son kapanıştaki ortalama.
     let j = ch ? findLastIndex(pts, (x) => x.tarih < ch.tarih) : -1;
     let base: number;
     let calibrating = false;
@@ -355,10 +476,12 @@ function buildFuel(
       calibrating = true;
     }
     const pct = (p.avg / base - 1) * 100;
-    const tl = (pct / 100) * ((p.raw * p.usd * dens) / 1000) * 1.2 * (1 - cfg.eselPay / 100);
+    const perLitre = (p.raw * p.usd) / LITRE_PER_GALLON; // TL/litre ürün maliyeti
+    const tl = (pct / 100) * perLitre * 1.2 * kats * (1 - cfg.eselPay / 100);
     return {
       tarih: p.tarih,
       raw: p.raw,
+      kontrat: p.kontrat,
       usd: p.usd,
       pct,
       tl,
@@ -384,11 +507,11 @@ function buildFuel(
 }
 
 export function computeForecast(cfg = getForecastConfig()): Record<Fuel, FuelCalc> {
-  const quotes = listQuotes();
+  const prices = listPrices();
   const changes = getPumpChanges(cfg);
   return {
-    motorin: buildFuel("motorin", quotes, changes, cfg),
-    benzin: buildFuel("benzin", quotes, changes, cfg),
+    motorin: buildFuel("motorin", prices, changes, cfg),
+    benzin: buildFuel("benzin", prices, changes, cfg),
   };
 }
 
@@ -406,9 +529,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   const calc = computeForecast(cfg);
   const latestDates = FUELS.map((f) => calc[f.key].latest?.tarih).filter(Boolean) as string[];
   if (latestDates.length === 0) {
-    return (
-      "📈 <b>Zam/İndirim Tahmini</b>\nHenüz piyasa verisi girilmedi.\n\n" + entryHelp()
-    );
+    return `📈 <b>Zam/İndirim Tahmini</b>\nHenüz piyasa verisi yok. Veri her iş günü saat ~${fetchTimeTr()} sonrası otomatik çekilir.`;
   }
   const tarih = latestDates.sort().pop()!;
   const lines: string[] = [];
@@ -422,8 +543,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   }
   if (lines.length) lines.push("");
 
-  lines.push(`📈 <b>Zam/İndirim Tahmini</b> · ${fmtDay(tarih)} kapanışı`);
-  const usd = FUELS.map((f) => calc[f.key].latest).find((r) => r?.tarih === tarih)?.usd;
+  lines.push(`📈 <b>Zam/İndirim Tahmini</b> · ${fmtDay(tarih)} Avrupa kapanışı`);
   for (const f of FUELS) {
     const r = calc[f.key].latest;
     if (!r) {
@@ -436,102 +556,32 @@ export function buildStatusText(cfg = getForecastConfig()): string {
     );
     lines.push(`   ${LEVEL_TEXT[r.level]}`);
   }
-  const parts = FUELS.map((f) => {
-    const r = calc[f.key].latest;
-    return r ? `${f.symbol.replace("2!", "")} ${fmtNum(r.raw, 1)}` : null;
-  }).filter(Boolean);
-  if (usd) lines.push(`Kur ${fmtNum(usd, 4)} · ${parts.join(" · ")} $/ton`);
+  const row = listPrices().find((p) => p.tarih === tarih);
+  if (row) {
+    const parts = [
+      row.ho != null ? `ABD motorin ${fmtNum(row.ho, 3)} $/gal` : null,
+      row.rb != null ? `ABD benzin ${fmtNum(row.rb, 3)} $/gal` : null,
+      row.brent != null ? `Brent ${fmtNum(row.brent, 1)} $` : null,
+    ].filter(Boolean);
+    lines.push(`Kur ${fmtNum(row.usd, 4)} · ${parts.join(" · ")}`);
+  }
   const last = FUELS.map((f) => {
     const c = calc[f.key].lastChange;
     return c ? `${f.label.toLocaleLowerCase("tr")} ${fmtDay(c.tarih)} (${fmtSigned(c.fark)} TL)` : null;
   }).filter(Boolean);
-  if (last.length) lines.push(`Son değişiklik: ${last.join(", ")}`);
+  if (last.length) lines.push(`Son pompa değişikliği: ${last.join(", ")}`);
   for (const f of FUELS) {
     const r = calc[f.key].latest;
-    if (!r?.calibrating) continue;
-    lines.push(
-      r.change
-        ? `ℹ️ ${f.label}: ${fmtDay(r.change.tarih)} değişikliğinden önceki kapanışlar girilmedi; sapma ${fmtDay(r.baseTarih)} kapanışından hesaplanıyor.`
-        : `ℹ️ ${f.label}: son pompa değişikliği henüz görülmedi; sapma ${fmtDay(r.baseTarih)} kapanışından hesaplanıyor.`
-    );
+    if (r?.calibrating)
+      lines.push(
+        `ℹ️ ${f.label}: son değişiklikten önceki piyasa verisi yok; sapma ${fmtDay(r.baseTarih)} kapanışından hesaplanıyor.`
+      );
   }
-  lines.push("<i>Tahmindir; kesin değişikliği rafineri açıklar.</i>");
+  lines.push("<i>Tahmindir; geçmiş testte motorin alarmlarının ~3'te 2'si tuttu.</i>");
   return lines.join("\n");
 }
 
-export function entryHelp(): string {
-  return (
-    // Saat ekleri (22:00'den / 23:00'ten) değiştiği için "saat ... sonrası" yazılır.
-    `En erken tahmin için o günün kapanışını hafta içi saat ~${settleVisibleTr()} sonrası ` +
-    "TradingView'a düşünce yazın. Gece giremezseniz sabah yazın; dünkü kapanış sayılır.\n" +
-    "• Motorin: <b>NYMEX:Z62!</b>\n• Benzin: <b>NYMEX:A3G2!</b>\n" +
-    "Örnek: <code>z6 1025,3 a3g 985,3</code>\n" +
-    "Geçmiş bir gün için tarih ekleyin: <code>z6 1025,3 a3g 985,3 20.10</code>\n" +
-    "Durumu görmek için: /piyasa"
-  );
-}
-
-// --- Giriş ayrıştırma ------------------------------------------------------------
-
-// "1,025.345" (TradingView), "1025,345" (Türkçe), "985.3" ... → sayı. Tek tür ayırıcı
-// belirsizse ($/ton için) akla yatkın aralıkta kalan yorum seçilir.
-export function parsePrice(s: string): number | null {
-  const t = s.trim();
-  if (!/^\d[\d.,]*$/.test(t)) return null;
-  const dot = t.lastIndexOf(".");
-  const comma = t.lastIndexOf(",");
-  const inRange = (n: number) => Number.isFinite(n) && n >= MIN_PRICE && n <= MAX_PRICE;
-  if (dot >= 0 && comma >= 0) {
-    const dec = dot > comma ? "." : ",";
-    const thou = dec === "." ? "," : ".";
-    const n = Number(t.split(thou).join("").replace(dec, "."));
-    return Number.isFinite(n) ? n : null;
-  }
-  const sep = comma >= 0 ? "," : dot >= 0 ? "." : null;
-  if (!sep) return Number(t);
-  const parts = t.split(sep);
-  const asDecimal = parts.length === 2 ? Number(`${parts[0]}.${parts[1]}`) : NaN;
-  const asThousands = parts.slice(1).every((p) => p.length === 3) ? Number(parts.join("")) : NaN;
-  if (inRange(asDecimal)) return asDecimal;
-  if (inRange(asThousands)) return asThousands;
-  return Number.isFinite(asDecimal) ? asDecimal : Number.isFinite(asThousands) ? asThousands : null;
-}
-
-export type ParsedEntry = { z6?: number; a3g?: number; tarih?: string; error?: string };
-
-export function parseEntryText(text: string, now = new Date()): ParsedEntry | null {
-  let rest = text.toLocaleLowerCase("tr");
-  const out: ParsedEntry = {};
-  const re = /(z6(?:2!?)?|a3g(?:2!?)?|motorin|benzin)\s*[:=]?\s*(\d[\d.,]*)/g;
-  let m: RegExpExecArray | null;
-  let found = false;
-  while ((m = re.exec(rest))) {
-    found = true;
-    const n = parsePrice(m[2]);
-    const key = m[1].startsWith("z6") || m[1] === "motorin" ? "z6" : "a3g";
-    if (n == null) return { error: `"${m[2]}" sayı olarak okunamadı.` };
-    out[key] = n;
-  }
-  if (!found) return null;
-  rest = rest.replace(re, " ");
-  const d = rest.match(/(?<![\d.,])(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?![\d.,])/);
-  if (d) {
-    const day = Number(d[1]);
-    const mon = Number(d[2]);
-    let year = d[3] ? Number(d[3].length === 2 ? `20${d[3]}` : d[3]) : now.getFullYear();
-    let iso = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const dt = parseIso(iso);
-    if (mon < 1 || mon > 12 || dt.getDate() !== day) return { error: "Tarih anlaşılamadı (gün.ay yazın, ör. 20.10)." };
-    if (!d[3] && iso > isoLocal(now)) {
-      year -= 1;
-      iso = `${year}-${iso.slice(5)}`;
-    }
-    out.tarih = iso;
-  }
-  return out;
-}
-
-// --- Kayıt + bildirim --------------------------------------------------------------
+// --- Bildirim ------------------------------------------------------------------
 
 async function sendToChats(chatIds: string[], text: string): Promise<number> {
   let sent = 0;
@@ -547,109 +597,30 @@ async function sendToChats(chatIds: string[], text: string): Promise<number> {
 }
 
 // Rapor alan kişiler (Ayarlar → Telegram'da erişimi ve raporları açık olanlar).
-function subscriberIds(exclude?: string): string[] {
+function subscriberIds(): string[] {
   return listChats()
-    .filter((c) => c.allowed && c.enabled && c.chatId !== exclude)
+    .filter((c) => c.allowed && c.enabled)
     .map((c) => c.chatId);
 }
 
-export type SaveResult = { ok: boolean; text: string; tarih?: string; broadcast?: number };
-
-export async function saveQuote(input: {
-  tarih?: string;
-  z6?: number | null;
-  a3g?: number | null;
-  by: string; // chat_id ya da "portal"
-}): Promise<SaveResult> {
-  const tarih = input.tarih || defaultEntryDate();
-  const z6 = input.z6 ?? null;
-  const a3g = input.a3g ?? null;
-  if (z6 == null && a3g == null) return { ok: false, text: "En az bir fiyat girin.\n\n" + entryHelp() };
-  for (const [label, v] of [["Motorin (Z62!)", z6], ["Benzin (A3G2!)", a3g]] as const) {
-    if (v != null && (v < MIN_PRICE || v > MAX_PRICE))
-      return {
-        ok: false,
-        text: `${label} için ${fmtNum(v, 1)} $/ton akla yatkın değil (${MIN_PRICE}–${MAX_PRICE} arası beklenir).`,
-      };
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(tarih)) return { ok: false, text: "Tarih geçersiz." };
-  if (tarih > isoLocal(new Date())) return { ok: false, text: "İleri tarihli kapanış girilemez." };
-  if (isWeekend(tarih)) return { ok: false, text: `${fmtDay(tarih)} hafta sonu; o gün kapanış olmaz.` };
-
-  const db = getDb();
-  const existing = db.prepare("SELECT usd FROM market_quotes WHERE tarih = ?").get(tarih) as
-    | { usd: number }
-    | undefined;
-  let usd: number;
-  try {
-    usd = existing?.usd ?? (await getUsdRate(tarih));
-  } catch (e) {
-    return { ok: false, text: e instanceof Error ? e.message : "Kur alınamadı." };
-  }
-
-  // Yazım hatası uyarısı: aynı kontrat ayındaki önceki kapanışa göre büyük fark.
-  const warnings: string[] = [];
-  for (const [label, col, v] of [["Motorin", "z6", z6], ["Benzin", "a3g", a3g]] as const) {
-    if (v == null) continue;
-    const prev = db
-      .prepare(`SELECT tarih, ${col} AS v FROM market_quotes WHERE tarih < ? AND ${col} IS NOT NULL ORDER BY tarih DESC LIMIT 1`)
-      .get(tarih) as { tarih: string; v: number } | undefined;
-    if (prev && v === prev.v)
-      warnings.push(
-        `⚠️ ${label} önceki kapanışla (${fmtDay(prev.tarih)}) birebir aynı; TradingView henüz güncellenmemiş olabilir. Rakam değişince tekrar yazın.`
-      );
-    else if (prev && prev.tarih.slice(0, 7) === tarih.slice(0, 7) && Math.abs(v / prev.v - 1) > JUMP_WARN)
-      warnings.push(
-        `⚠️ ${label} önceki kapanışa (${fmtDay(prev.tarih)}: ${fmtNum(prev.v, 1)}) göre ${fmtPct((v / prev.v - 1) * 100)} değişti; rakam yanlışsa tekrar yazın.`
-      );
-  }
-
-  db.prepare(
-    `INSERT INTO market_quotes (tarih, z6, a3g, usd, entered_by, entered_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tarih) DO UPDATE SET z6 = COALESCE(excluded.z6, z6), a3g = COALESCE(excluded.a3g, a3g),
-       entered_by = excluded.entered_by, entered_at = excluded.entered_at`
-  ).run(tarih, z6, a3g, usd, input.by, Date.now());
-
+// Günün kapanışı geldiyse (bir kez) rapor alanlara gönderir.
+async function broadcastDay(tarih: string): Promise<number> {
   const cfg = getForecastConfig();
-  const status = buildStatusText(cfg);
-  const head = `✅ ${fmtDay(tarih)} kapanışı kaydedildi.`;
-  const text = [head, ...warnings, "", status].join("\n");
-
-  // Günün kaydıysa (geçmiş gün ya da düzeltme değilse) rapor alanlara da gönder.
-  let broadcast = 0;
-  if (cfg.enabled && isTelegramConfigured() && tarih === defaultEntryDate() && getSetting("ff_last_broadcast") !== tarih) {
-    const calc = computeForecast(cfg);
-    const levels = FUELS.map((f) => calc[f.key].latest?.level ?? "notr").join(",");
-    const prevLevels = getSetting("ff_last_levels") ?? "";
-    const alert = levels.split(",").some((l) => l !== "notr") && levels !== prevLevels;
-    if (cfg.gunlukDurum || alert) {
-      setSetting("ff_last_broadcast", tarih);
-      setSetting("ff_last_levels", levels);
-      broadcast = await sendToChats(subscriberIds(input.by), status);
-    }
-  }
-  return { ok: true, text, tarih, broadcast };
+  if (!cfg.enabled || !isTelegramConfigured() || getSetting("ff_last_broadcast") === tarih) return 0;
+  const calc = computeForecast(cfg);
+  const levels = FUELS.map((f) => calc[f.key].latest?.level ?? "notr").join(",");
+  const prevLevels = getSetting("ff_last_levels") ?? "";
+  const alert = levels.split(",").some((l) => l !== "notr") && levels !== prevLevels;
+  setSetting("ff_last_broadcast", tarih);
+  if (!cfg.gunlukDurum && !alert) return 0;
+  setSetting("ff_last_levels", levels);
+  return sendToChats(subscriberIds(), buildStatusText(cfg));
 }
-
-// Telegram botundan gelen mesaj ("z6 1025,3 a3g 985,3", "/piyasa").
-export async function handleTelegramEntry(chatId: string, text: string): Promise<string> {
-  const lower = text.trim().toLocaleLowerCase("tr");
-  if (lower === "/piyasa" || lower === "/zam" || lower === "piyasa") return buildStatusText();
-  const parsed = parseEntryText(text);
-  if (!parsed) return entryHelp();
-  if (parsed.error) return `${parsed.error}\n\n${entryHelp()}`;
-  const r = await saveQuote({ tarih: parsed.tarih, z6: parsed.z6, a3g: parsed.a3g, by: chatId });
-  return r.text;
-}
-
-// --- Zamanlayıcı (pompa değişikliği + hatırlatma) ---------------------------------
 
 async function checkPumpChanges(today: string): Promise<void> {
-  const info = await ensureDailyPrices(STATION.plaka, STATION.il, STATION.ilce);
-  if (info.rows.length === 0) return; // çekilemedi; sonraki turda tekrar
+  await refreshPumpPrices(30);
   setSetting("ff_pump_checked", today);
-  const cfg = getForecastConfig();
-  const calc = computeForecast(cfg);
+  const calc = computeForecast();
   const lines: string[] = [];
   for (const f of FUELS) {
     const c = calc[f.key].changes.find((x) => x.tarih === today);
@@ -657,71 +628,79 @@ async function checkPumpChanges(today: string): Promise<void> {
     if (!c || getSetting(key)) continue;
     setSetting(key, "1");
     const dir = c.fark > 0 ? "zam" : "indirim";
-    lines.push(
-      `${f.icon} <b>${f.label}e ${dir} geldi</b>: ${fmtSigned(c.fark)} TL (${fmtNum(c.eski)} → ${fmtNum(c.yeni)})`
-    );
+    lines.push(`${f.icon} <b>${f.label}e ${dir} geldi</b>: ${fmtSigned(c.fark)} TL (${fmtNum(c.eski)} → ${fmtNum(c.yeni)})`);
     if (c.estimate)
-      lines.push(`   Modelin beklentisi: ~${fmtSigned(c.estimate.tl)} TL (${fmtPct(c.estimate.pct)}, ${fmtDay(c.estimate.tarih)})`);
+      lines.push(
+        `   Modelin beklentisi: ~${fmtSigned(c.estimate.tl)} TL (${fmtPct(c.estimate.pct)}, ${fmtDay(c.estimate.tarih)})`
+      );
   }
-  if (lines.length === 0) return;
-  await sendToChats(subscriberIds(), ["⛽ <b>Pompa fiyatı değişti</b> (Petrol Ofisi, Sakarya)", ...lines].join("\n"));
+  if (lines.length === 0 || !isTelegramConfigured()) return;
+  await sendToChats(subscriberIds(), [`⛽ <b>Pompa fiyatı değişti</b> (${OPET.ad})`, ...lines].join("\n"));
 }
 
-// want: girilmesi beklenen kapanış günü. night: kapanış az önce TradingView'a düştü.
-async function remindMissing(want: string, night: boolean): Promise<void> {
-  const row = getDb().prepare("SELECT 1 FROM market_quotes WHERE tarih = ?").get(want);
-  if (row) return;
-  // Hatırlatma, en son veri giren kişiye gider (portaldan girildiyse kimseye).
-  const last = getDb()
-    .prepare("SELECT entered_by FROM market_quotes WHERE entered_by IS NOT NULL AND entered_by != 'portal' ORDER BY entered_at DESC LIMIT 1")
-    .get() as { entered_by: string } | undefined;
-  if (!last) return;
-  await sendToChats(
-    [last.entered_by],
-    night
-      ? `🔔 Bugünün (${fmtDay(want)}) kapanışı TradingView'a düşmüş olmalı. En erken tahmin için şimdi yazın, ör. <code>z6 1025,3 a3g 985,3</code>\n` +
-          "Rakam dünküyle aynıysa birkaç dakika sonra tekrar bakın."
-      : `⏰ ${fmtDay(want)} kapanışı için Akdeniz fiyatı girilmedi.\n` +
-          `TradingView'dan değerleri yazın, ör. <code>z6 1025,3 a3g 985,3 ${parseIso(want).getDate()}.${parseIso(want).getMonth() + 1}</code>`
-  );
-}
+// --- Zamanlayıcı ---------------------------------------------------------------
 
 async function tick(): Promise<void> {
   const cfg = getForecastConfig();
-  if (!cfg.enabled || !isTelegramConfigured()) return;
+  if (!cfg.enabled) return;
   const now = new Date();
+
+  // 1) Piyasa: hafta içi Londra 16:45'ten sonra, o günün kapanışı alınana kadar.
+  const lon = zoned(now, "Europe/London");
+  if (!isWeekend(lon.iso) && lon.minutes >= FETCH_AFTER_LONDON && getSetting("ff_market_day") !== lon.iso) {
+    try {
+      await refreshMarket(now);
+    } catch (e) {
+      console.error("[zam-tahmini] piyasa verisi alınamadı:", e instanceof Error ? e.message : e);
+    }
+    const got = getDb().prepare("SELECT 1 FROM market_prices WHERE tarih = ?").get(lon.iso);
+    if (got) {
+      setSetting("ff_market_day", lon.iso);
+      await broadcastDay(lon.iso);
+    } else if (lon.minutes >= GIVE_UP_LONDON) {
+      setSetting("ff_market_day", lon.iso);
+      if (isTelegramConfigured())
+        await sendToChats(
+          subscriberIds(),
+          `⚠️ ${fmtDay(lon.iso)} için piyasa verisi alınamadı (ABD piyasası tatil olabilir); bugün tahmin gönderilemedi.`
+        );
+    }
+  }
+
+  // 2) Pompa: fiyatlar 00:01'de değişir; sabah Opet arşivinden kontrol.
   const today = isoLocal(now);
   const minutes = now.getHours() * 60 + now.getMinutes();
-  // Fiyatlar 00:01'de değişir; marka siteleri sabah güncel olur.
   if (minutes >= 8 * 60 + 30 && minutes < 14 * 60 && getSetting("ff_pump_checked") !== today) {
     await checkPumpChanges(today);
   }
-  // Sabah: dünkü kapanış girilmediyse.
-  const wd = now.getDay();
-  if (wd >= 1 && wd <= 5 && minutes >= 10 * 60 + 30 && getSetting("ff_reminded") !== today) {
-    setSetting("ff_reminded", today);
-    await remindMissing(defaultEntryDate(now), false);
-  }
-  // Gece: o günün kapanışı TradingView'a düştükten yarım saat sonra.
-  const ny = newYorkNow(now);
-  if (
-    cfg.geceHatirlatma &&
-    !isWeekend(ny.iso) &&
-    ny.minutes >= NIGHT_REMIND_NY &&
-    ny.minutes < 18 * 60 &&
-    getSetting("ff_reminded_night") !== ny.iso
-  ) {
-    setSetting("ff_reminded_night", ny.iso);
-    await remindMissing(ny.iso, true);
-  }
+}
+
+// İlk açılışta: pompa geçmişi (Opet, ~14 ay) ve son 45 günün piyasa verisi.
+export async function bootstrapForecast(): Promise<void> {
+  const db = getDb();
+  const pumps = (db.prepare("SELECT COUNT(*) AS n FROM pump_prices").get() as { n: number }).n;
+  if (pumps === 0) await refreshPumpPrices(420);
+  const prices = (db.prepare("SELECT COUNT(*) AS n FROM market_prices").get() as { n: number }).n;
+  if (prices < 5) await refreshMarket();
 }
 
 const g = globalThis as unknown as { __fuelForecastTimer?: ReturnType<typeof setInterval> };
 
 export function startForecastScheduler(): void {
   if (g.__fuelForecastTimer) return;
-  const run = () =>
-    tick().catch((e) => console.error("[zam-tahmini] zamanlayıcı hatası:", e instanceof Error ? e.message : e));
-  setTimeout(run, 90_000);
+  const log = (e: unknown) => console.error("[zam-tahmini]", e instanceof Error ? e.message : e);
+  let busy = false;
+  const run = () => {
+    if (busy) return;
+    busy = true;
+    tick()
+      .catch(log)
+      .finally(() => {
+        busy = false;
+      });
+  };
+  setTimeout(() => {
+    bootstrapForecast().catch(log).finally(run);
+  }, 90_000);
   g.__fuelForecastTimer = setInterval(run, 5 * 60_000);
 }

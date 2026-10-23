@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Panel, Pill } from "@/components/ai/ui";
-import { TrendingUp, ExternalLink, Save, Trash2, AlertTriangle, Send, Settings2 } from "lucide-react";
+import { TrendingUp, RefreshCw, Save, AlertTriangle, Send, Settings2 } from "lucide-react";
 
 type Fuel = "motorin" | "benzin";
 type Level = "zam" | "zam_yakin" | "notr" | "indirim_yakin" | "indirim";
@@ -11,6 +11,7 @@ type PumpChange = { tarih: string; yakit: Fuel; eski: number; yeni: number; fark
 type FuelRow = {
   tarih: string;
   raw: number;
+  kontrat: string;
   usd: number;
   pct: number;
   tl: number;
@@ -23,38 +24,38 @@ type Config = {
   enabled: boolean;
   esikPct: number;
   ortalamaGun: number;
-  yogunlukMotorin: number;
-  yogunlukBenzin: number;
+  katsayiMotorin: number;
+  katsayiBenzin: number;
   eselPay: number;
   gunlukDurum: boolean;
-  geceHatirlatma: boolean;
   yoksay: string[];
 };
-type Quote = {
+type PriceRow = {
   tarih: string;
-  z6: number | null;
-  a3g: number | null;
+  ho: number | null;
+  ho_kontrat: string | null;
+  rb: number | null;
+  rb_kontrat: string | null;
+  brent: number | null;
   usd: number;
-  enteredByName: string;
   motorin: FuelRow | null;
   benzin: FuelRow | null;
 };
 type Data = {
   config: Config;
-  defaultTarih: string;
-  settleTime: string;
+  fetchTime: string;
+  lastFetched: number | null;
   latest: Record<Fuel, FuelRow | null>;
   lastChange: Record<Fuel, PumpChange | null>;
-  quotes: Quote[];
+  rows: PriceRow[];
   changes: (PumpChange & { estimate: FuelRow | null })[];
   statusText: string;
-  broadcast?: number;
   error?: string;
 };
 
-const FUELS: { key: Fuel; label: string; symbol: string; url: string }[] = [
-  { key: "motorin", label: "Motorin", symbol: "NYMEX:Z62!", url: "https://www.tradingview.com/symbols/NYMEX-Z62!/" },
-  { key: "benzin", label: "Benzin", symbol: "NYMEX:A3G2!", url: "https://www.tradingview.com/symbols/NYMEX-A3G2!/" },
+const FUELS: { key: Fuel; label: string; source: string }[] = [
+  { key: "motorin", label: "Motorin", source: "ABD motorin (Heating Oil)" },
+  { key: "benzin", label: "Benzin", source: "ABD benzin (RBOB)" },
 ];
 
 const LEVEL: Record<Level, { text: string; tone: "negative" | "warning" | "neutral" | "positive" | "primary" }> = {
@@ -89,6 +90,9 @@ function pctTone(r: FuelRow | null): string {
   if (r.level === "indirim_yakin") return "text-primary";
   return "text-muted-foreground";
 }
+function kontratAd(k: string | null): string {
+  return k ? k.replace(".NYM", "") : "—";
+}
 
 // Sapma göstergesi: ortada 0, iki yanda eşik; bar ortadan sapmaya doğru dolar.
 function Gauge({ value, esik }: { value: number; esik: number }) {
@@ -97,22 +101,35 @@ function Gauge({ value, esik }: { value: number; esik: number }) {
   const pos = (v: number) => 50 + (v / span) * 50;
   const left = Math.min(pos(0), pos(clamp));
   const width = Math.abs(pos(clamp) - pos(0));
-  const color = value >= esik ? "bg-red-500" : value >= esik * 0.7 ? "bg-amber-500" : value <= -esik ? "bg-emerald-500" : value <= -esik * 0.7 ? "bg-primary" : "bg-muted-foreground/50";
+  const color =
+    value >= esik
+      ? "bg-red-500"
+      : value >= esik * 0.7
+        ? "bg-amber-500"
+        : value <= -esik
+          ? "bg-emerald-500"
+          : value <= -esik * 0.7
+            ? "bg-primary"
+            : "bg-muted-foreground/50";
   return (
     <div className="relative mt-3 h-3 rounded-full bg-muted">
       <div className={`absolute top-0 h-3 rounded-full ${color}`} style={{ left: `${left}%`, width: `${width}%` }} />
       {[-esik, 0, esik].map((m) => (
         <div key={m} className="absolute -top-1 h-5 w-px bg-foreground/40" style={{ left: `${pos(m)}%` }} />
       ))}
-      <div className="absolute top-4 -translate-x-1/2 text-[10px] text-muted-foreground" style={{ left: `${pos(-esik)}%` }}>
-        −%{num(esik, 1)}
-      </div>
-      <div className="absolute top-4 -translate-x-1/2 text-[10px] text-muted-foreground" style={{ left: "50%" }}>
-        0
-      </div>
-      <div className="absolute top-4 -translate-x-1/2 text-[10px] text-muted-foreground" style={{ left: `${pos(esik)}%` }}>
-        +%{num(esik, 1)}
-      </div>
+      {[
+        [-esik, `−%${num(esik, 1)}`],
+        [0, "0"],
+        [esik, `+%${num(esik, 1)}`],
+      ].map(([v, label]) => (
+        <div
+          key={String(v)}
+          className="absolute top-4 -translate-x-1/2 text-[10px] text-muted-foreground"
+          style={{ left: `${pos(Number(v))}%` }}
+        >
+          {label}
+        </div>
+      ))}
     </div>
   );
 }
@@ -121,16 +138,12 @@ export default function ZamTahminiPage() {
   const [data, setData] = useState<Data | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tarih, setTarih] = useState("");
-  const [z6, setZ6] = useState("");
-  const [a3g, setA3g] = useState("");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [showCfg, setShowCfg] = useState(false);
 
   const apply = useCallback((d: Data) => {
     setData(d);
     setCfg(d.config);
-    setTarih((t) => t || d.defaultTarih);
   }, []);
 
   useEffect(() => {
@@ -164,18 +177,6 @@ export default function ZamTahminiPage() {
     }
   };
 
-  const saveEntry = async () => {
-    const d = await post({ action: "save", tarih, z6: z6 || null, a3g: a3g || null });
-    if (d) {
-      setZ6("");
-      setA3g("");
-      setMsg({
-        ok: true,
-        text: `${fmtDay(tarih)} kapanışı kaydedildi.${d.broadcast ? ` Telegram'da ${d.broadcast} kişiye gönderildi.` : ""}`,
-      });
-    }
-  };
-
   if (!data || !cfg) {
     return (
       <Panel className="py-10 text-center">
@@ -183,6 +184,8 @@ export default function ZamTahminiPage() {
       </Panel>
     );
   }
+
+  const empty = data.rows.length === 0;
 
   return (
     <div className="space-y-6">
@@ -194,10 +197,10 @@ export default function ZamTahminiPage() {
           <div className="flex-1">
             <p className="text-sm font-semibold">Zam/İndirim Tahmini</p>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Pompa fiyatı, Akdeniz ürün fiyatı ($/ton) × TCMB dolar kuruyla oluşur. Son pompa
-              değişikliğinden beri bu maliyet eşiği aşınca rafineri zam ya da indirim yapar. Her
-              sabah TradingView&apos;dan iki değer girilir; sistem sapmayı hesaplayıp Telegram&apos;da
-              rapor alanlara bildirir. Tahmindir, resmi formül yayınlanmaz.
+              Pompa fiyatı, Avrupa ürün fiyatı × dolar kuruyla oluşur; son pompa değişikliğinden beri bu maliyet
+              eşiği aşınca zam ya da indirim gelir. Sistem her iş günü Avrupa kapanışında (saat ~{data.fetchTime})
+              ABD motorin/benzin vadelilerini ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
+              rapor alanlara bildirir. Tahmindir; resmi formül yayınlanmaz.
             </p>
           </div>
           <label className="flex shrink-0 items-center gap-2 text-sm">
@@ -207,7 +210,7 @@ export default function ZamTahminiPage() {
               disabled={busy}
               onChange={(e) => post({ action: "config", enabled: e.target.checked })}
             />
-            Telegram bildirimleri
+            Otomatik takip ve Telegram
           </label>
         </div>
       </Panel>
@@ -223,7 +226,9 @@ export default function ZamTahminiPage() {
                 <div>
                   <p className="text-sm font-semibold">{f.label}</p>
                   <p className="text-xs text-muted-foreground">
-                    {r ? `${fmtDay(r.tarih)} kapanışı · ${num(r.raw, 1)} $/ton · kur ${num(r.usd, 4)}` : "Henüz veri yok"}
+                    {r
+                      ? `${fmtDay(r.tarih)} · ${f.source} ${num(r.raw, 3)} $/gal (${kontratAd(r.kontrat)}) · kur ${num(r.usd, 4)}`
+                      : "Henüz veri yok"}
                   </p>
                 </div>
                 {r && <Pill tone={LEVEL[r.level].tone}>{LEVEL[r.level].text}</Pill>}
@@ -239,69 +244,48 @@ export default function ZamTahminiPage() {
                   <Gauge value={r.pct} esik={data.config.esikPct} />
                   <p className="mt-7 text-xs text-muted-foreground">
                     {ch
-                      ? `Son pompa değişikliği: ${fmtDay(ch.tarih)} (${signed(ch.fark)} TL) · baz ${fmtDay(r.baseTarih)}`
+                      ? `Son pompa değişikliği: ${fmtDay(ch.tarih)} (${signed(ch.fark)} TL) · baz ${fmtDay(r.baseTarih)} kapanışı`
                       : `Henüz pompa değişikliği görülmedi · baz ${fmtDay(r.baseTarih)}`}
                   </p>
                   {r.calibrating && (
                     <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      {ch
-                        ? `${fmtDay(ch.tarih)} değişikliğinden önceki günlerin verisi yok; sapma ilk girilen günden hesaplanıyor. Doğru sonuç için değişiklikten önceki birkaç iş gününü de girin.`
-                        : "Son pompa değişikliği bilinmiyor; sapma ilk girilen günden hesaplanıyor."}
+                      Son değişiklikten önceki piyasa verisi yok; sapma ilk kapanıştan hesaplanıyor.
                     </p>
                   )}
                 </>
               ) : (
-                <p className="mt-3 text-sm text-muted-foreground">Aşağıdan ilk kapanışı girin.</p>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Veri her iş günü ~{data.fetchTime} sonrası otomatik gelir. Hemen doldurmak için &quot;Şimdi
+                  güncelle&quot;ye basın.
+                </p>
               )}
             </Panel>
           );
         })}
       </div>
 
-      {/* Giriş */}
+      {/* Veri kaynağı */}
       <Panel>
-        <p className="text-sm font-semibold">Kapanış gir</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          Telegram botuna da yazılabilir: <code className="rounded bg-muted px-1">z6 1025,3 a3g 985,3</code> · geçmiş gün
-          için sonuna tarih: <code className="rounded bg-muted px-1">20.10</code>. Kur TCMB&apos;den otomatik alınır.
-          <b className="text-foreground">En erken tahmin:</b> o günün kapanışı TradingView&apos;a hafta içi saat
-          ~{data.settleTime} sonrası düşer; o saatten sonra girilen değer o günün, öncesinde girilen bir önceki iş
-          gününün kapanışı sayılır.
-        </p>
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-muted-foreground">Kapanış günü</span>
-            <input
-              type="date"
-              value={tarih}
-              onChange={(e) => setTarih(e.target.value)}
-              className="h-10 rounded-lg border bg-muted/50 px-3 text-sm outline-none focus:border-primary"
-            />
-          </label>
-          {FUELS.map((f) => (
-            <label key={f.key} className="flex flex-col gap-1">
-              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                {f.label} ({f.symbol}) $/ton
-                <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary" title="TradingView'da aç">
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </span>
-              <input
-                inputMode="decimal"
-                value={f.key === "motorin" ? z6 : a3g}
-                onChange={(e) => (f.key === "motorin" ? setZ6 : setA3g)(e.target.value)}
-                placeholder={f.key === "motorin" ? "1025,345" : "985,304"}
-                className="h-10 w-40 rounded-lg border bg-muted/50 px-3 text-sm outline-none focus:border-primary"
-              />
-            </label>
-          ))}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">Veri</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Piyasa: Yahoo Finance — ABD motorin (Heating Oil) ve benzin (RBOB) vadelileri, her gün Londra 16:30
+              fiyatı (Platts/ICE kapanışıyla aynı an). Kur: TCMB. Gerçekleşen değişiklikler: Opet Serdivan fiyat
+              arşivi.
+              {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
+            </p>
+          </div>
           <button
-            onClick={saveEntry}
-            disabled={busy || (!z6 && !a3g) || !tarih}
-            className="flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            onClick={() =>
+              post({ action: "refresh" }).then((d) => d && setMsg({ ok: true, text: "Veriler güncellendi." }))
+            }
+            disabled={busy}
+            className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            <Save className="h-4 w-4" /> Kaydet
+            <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
+            {empty ? "Geçmişi doldur" : "Şimdi güncelle"}
           </button>
         </div>
         {msg && <p className={`mt-3 text-sm font-medium ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>}
@@ -317,10 +301,11 @@ export default function ZamTahminiPage() {
 
       {/* Gerçekleşen değişiklikler */}
       <Panel>
-        <p className="text-sm font-semibold">Gerçekleşen pompa değişiklikleri (Petrol Ofisi, Sakarya)</p>
+        <p className="text-sm font-semibold">Gerçekleşen pompa değişiklikleri (Opet Serdivan)</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Modelin değişiklikten önceki son kapanışta söylediğiyle karşılaştırma. ÖTV artışı gibi piyasa dışı
-          değişiklikleri &quot;baz sayma&quot; ile hariç tutun.
+          Modelin değişiklikten önceki son kapanışta söylediğiyle karşılaştırma. 0,30 TL&apos;nin altındaki marj
+          oynamaları sayılmaz. ÖTV artışı gibi piyasa dışı değişiklikleri &quot;baz say&quot; işaretini kaldırarak
+          hariç tutun.
         </p>
         {data.changes.length === 0 ? (
           <p className="mt-3 text-sm text-muted-foreground">Henüz değişiklik kaydı yok.</p>
@@ -337,86 +322,89 @@ export default function ZamTahminiPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.changes.map((c) => (
-                  <tr key={`${c.tarih}-${c.yakit}`} className={`border-b last:border-0 ${c.ignored ? "opacity-50" : ""}`}>
-                    <td className="py-2 pr-3">{fmtDay(c.tarih)}</td>
-                    <td className="py-2 pr-3">{c.yakit === "motorin" ? "Motorin" : "Benzin"}</td>
-                    <td className={`py-2 pr-3 font-medium ${c.fark > 0 ? "text-red-600" : "text-emerald-600"}`}>
-                      {signed(c.fark)} TL <span className="font-normal text-muted-foreground">({num(c.eski)} → {num(c.yeni)})</span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      {c.estimate ? (
-                        <>
-                          {signed(c.estimate.tl)} TL <span className="text-muted-foreground">({pct(c.estimate.pct)})</span>
-                        </>
-                      ) : (
-                        <span className="text-muted-foreground">veri yok</span>
-                      )}
-                    </td>
-                    <td className="py-2">
-                      <label className="flex items-center gap-1.5 text-xs">
-                        <input
-                          type="checkbox"
-                          checked={!c.ignored}
-                          disabled={busy}
-                          onChange={(e) => post({ action: "ignore", tarih: c.tarih, yakit: c.yakit, ignored: !e.target.checked })}
-                        />
-                        baz say
-                      </label>
-                    </td>
-                  </tr>
-                ))}
+                {data.changes.map((c) => {
+                  const right = c.estimate && c.estimate.pct * c.fark > 0;
+                  return (
+                    <tr key={`${c.tarih}-${c.yakit}`} className={`border-b last:border-0 ${c.ignored ? "opacity-50" : ""}`}>
+                      <td className="py-2 pr-3">{fmtDay(c.tarih)}</td>
+                      <td className="py-2 pr-3">{c.yakit === "motorin" ? "Motorin" : "Benzin"}</td>
+                      <td className={`py-2 pr-3 font-medium ${c.fark > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                        {signed(c.fark)} TL{" "}
+                        <span className="font-normal text-muted-foreground">
+                          ({num(c.eski)} → {num(c.yeni)})
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3">
+                        {c.estimate ? (
+                          <>
+                            {signed(c.estimate.tl)} TL{" "}
+                            <span className="text-muted-foreground">({pct(c.estimate.pct)})</span>{" "}
+                            <span className={right ? "text-emerald-600" : "text-red-600"}>{right ? "✓ yön" : "✗ yön"}</span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">veri yok</span>
+                        )}
+                      </td>
+                      <td className="py-2">
+                        <label className="flex items-center gap-1.5 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={!c.ignored}
+                            disabled={busy}
+                            onChange={(e) =>
+                              post({ action: "ignore", tarih: c.tarih, yakit: c.yakit, ignored: !e.target.checked })
+                            }
+                          />
+                          baz say
+                        </label>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </Panel>
 
-      {/* Girilen kapanışlar */}
+      {/* Piyasa verisi */}
       <Panel>
-        <p className="text-sm font-semibold">Girilen kapanışlar</p>
-        {data.quotes.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">Henüz giriş yok.</p>
+        <p className="text-sm font-semibold">Günlük piyasa verisi (Londra 16:30)</p>
+        {empty ? (
+          <p className="mt-3 text-sm text-muted-foreground">Henüz veri yok.</p>
         ) : (
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">Gün</th>
-                  <th className="py-2 pr-3 font-medium">Z62! $/t</th>
-                  <th className="py-2 pr-3 font-medium">A3G2! $/t</th>
+                  <th className="py-2 pr-3 font-medium">ABD motorin $/gal</th>
+                  <th className="py-2 pr-3 font-medium">ABD benzin $/gal</th>
+                  <th className="py-2 pr-3 font-medium">Brent $</th>
                   <th className="py-2 pr-3 font-medium">Kur</th>
                   <th className="py-2 pr-3 font-medium">Motorin sapma</th>
-                  <th className="py-2 pr-3 font-medium">Benzin sapma</th>
-                  <th className="py-2 pr-3 font-medium">Giren</th>
-                  <th className="py-2" />
+                  <th className="py-2 font-medium">Benzin sapma</th>
                 </tr>
               </thead>
               <tbody>
-                {data.quotes.map((q) => (
+                {data.rows.map((q) => (
                   <tr key={q.tarih} className="border-b last:border-0">
                     <td className="py-2 pr-3">{fmtDay(q.tarih)}</td>
-                    <td className="py-2 pr-3">{q.z6 != null ? num(q.z6, 1) : "—"}</td>
-                    <td className="py-2 pr-3">{q.a3g != null ? num(q.a3g, 1) : "—"}</td>
+                    <td className="py-2 pr-3">
+                      {q.ho != null ? num(q.ho, 3) : "—"}{" "}
+                      <span className="text-xs text-muted-foreground">{kontratAd(q.ho_kontrat)}</span>
+                    </td>
+                    <td className="py-2 pr-3">
+                      {q.rb != null ? num(q.rb, 3) : "—"}{" "}
+                      <span className="text-xs text-muted-foreground">{kontratAd(q.rb_kontrat)}</span>
+                    </td>
+                    <td className="py-2 pr-3">{q.brent != null ? num(q.brent, 1) : "—"}</td>
                     <td className="py-2 pr-3">{num(q.usd, 4)}</td>
                     <td className={`py-2 pr-3 ${pctTone(q.motorin)}`}>
                       {q.motorin ? `${pct(q.motorin.pct)} · ${signed(q.motorin.tl)} TL` : "—"}
                     </td>
-                    <td className={`py-2 pr-3 ${pctTone(q.benzin)}`}>
+                    <td className={`py-2 ${pctTone(q.benzin)}`}>
                       {q.benzin ? `${pct(q.benzin.pct)} · ${signed(q.benzin.tl)} TL` : "—"}
-                    </td>
-                    <td className="py-2 pr-3 text-xs text-muted-foreground">{q.enteredByName}</td>
-                    <td className="py-2 text-right">
-                      <button
-                        onClick={() => {
-                          if (confirm(`${fmtDay(q.tarih)} kapanışı silinsin mi?`)) post({ action: "delete", tarih: q.tarih });
-                        }}
-                        disabled={busy}
-                        className="text-muted-foreground hover:text-red-500"
-                        title="Sil"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
                     </td>
                   </tr>
                 ))}
@@ -438,8 +426,8 @@ export default function ZamTahminiPage() {
                 [
                   ["esikPct", "Eşik (%)", "0.1"],
                   ["ortalamaGun", "Ortalama (kapanış)", "1"],
-                  ["yogunlukMotorin", "Motorin yoğunluk (kg/lt)", "0.001"],
-                  ["yogunlukBenzin", "Benzin yoğunluk (kg/lt)", "0.001"],
+                  ["katsayiMotorin", "Motorin katsayı", "0.05"],
+                  ["katsayiBenzin", "Benzin katsayı", "0.05"],
                   ["eselPay", "Eşel mobil payı (%)", "1"],
                 ] as const
               ).map(([key, label, step]) => (
@@ -456,25 +444,23 @@ export default function ZamTahminiPage() {
               ))}
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={cfg.gunlukDurum} onChange={(e) => setCfg({ ...cfg, gunlukDurum: e.target.checked })} />
-              Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
-            </label>
-            <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={cfg.geceHatirlatma}
-                onChange={(e) => setCfg({ ...cfg, geceHatirlatma: e.target.checked })}
+                checked={cfg.gunlukDurum}
+                onChange={(e) => setCfg({ ...cfg, gunlukDurum: e.target.checked })}
               />
-              Gece hatırlatması: kapanış TradingView&apos;a düştükten yarım saat sonra girilmediyse son giren kişiye
-              Telegram&apos;dan haber ver
+              Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
             </label>
             <p className="text-xs text-muted-foreground">
-              Eşik ve ortalama, sektörde konuşulan kurala göre (%3, 5 kapanış) başlar; gerçekleşen değişikliklere bakarak
-              ayarlanır. Eşel mobil uygulanıyorsa, zammın devletin ÖTV&apos;den karşıladığı payı girin — pompaya yansıyan
-              TL tahmini o kadar azalır.
+              Varsayılanlar 2023–2026 geçmiş testinden: 3 kapanış ortalaması ve %3 eşikle motorin alarmlarının
+              ~3&apos;te 2&apos;si 5 iş günü içinde aynı yönde değişiklikle sonuçlandı (ortalama ~3 iş günü önce).
+              Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır (motorin ~1,3, benzin ~0,95). Eşel mobil
+              uygulanırsa, zammın devletin ÖTV&apos;den karşıladığı payı girin.
             </p>
             <button
-              onClick={() => post({ action: "config", ...cfg }).then((d) => d && setMsg({ ok: true, text: "Ayarlar kaydedildi." }))}
+              onClick={() =>
+                post({ action: "config", ...cfg }).then((d) => d && setMsg({ ok: true, text: "Ayarlar kaydedildi." }))
+              }
               disabled={busy}
               className="flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
