@@ -27,6 +27,7 @@ export type ForecastConfig = {
   yogunlukBenzin: number;
   eselPay: number; // eşel mobil: değişimin devletin ÖTV'den karşıladığı payı (%)
   gunlukDurum: boolean; // her gün durum gönder (kapalıysa yalnız uyarılar)
+  geceHatirlatma: boolean; // kapanış TradingView'a düşünce (gece) hatırlat
   yoksay: string[]; // baz sayılmayacak pompa değişiklikleri: "YYYY-MM-DD|yakit"
 };
 
@@ -38,6 +39,7 @@ export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   yogunlukBenzin: 0.75,
   eselPay: 0,
   gunlukDurum: true,
+  geceHatirlatma: true,
   yoksay: [],
 };
 
@@ -133,6 +135,7 @@ export function saveForecastConfig(patch: Partial<ForecastConfig>): ForecastConf
       patch.yogunlukBenzin != null ? num(patch.yogunlukBenzin, 0.6, 1, cur.yogunlukBenzin) : cur.yogunlukBenzin,
     eselPay: patch.eselPay != null ? num(patch.eselPay, 0, 100, cur.eselPay) : cur.eselPay,
     gunlukDurum: typeof patch.gunlukDurum === "boolean" ? patch.gunlukDurum : cur.gunlukDurum,
+    geceHatirlatma: typeof patch.geceHatirlatma === "boolean" ? patch.geceHatirlatma : cur.geceHatirlatma,
     yoksay: Array.isArray(patch.yoksay) ? patch.yoksay.map(String) : cur.yoksay,
   };
   setSetting("fuel_forecast", JSON.stringify(next));
@@ -172,15 +175,45 @@ function prevBusinessDay(iso: string): string {
   return d;
 }
 
-// Elle girilen fiyat hangi kapanışa ait sayılır. CME, NYMEX kapanışlarını New York
-// 14:47'den itibaren ön, 19:00'da kesin yayınlar — Türkiye saatiyle yaz ~21:47 / 02:00,
-// kış ~22:47 / 03:00; TradingView ~10 dk gecikmeli gösterir. Bu yüzden hafta içi
-// 23:00'ten sonra girilen değer o günün kapanışı, öncesi bir önceki iş günününkü sayılır.
-const SAME_DAY_FROM_HOUR = 23;
+// CME, NYMEX kapanışlarını New York saatiyle 14:47'den itibaren ön, 19:00'da kesin
+// yayınlar; TradingView ~10 dk gecikmeli gösterir. Türkiye saatine çevirisi ABD yaz/kış
+// saatine göre değiştiği için (yaz ~22:00, kış ~23:00) hesap New York saatiyle yapılır.
+const SETTLE_VISIBLE_NY = 15 * 60; // TradingView'da o günün kapanışının görüneceği an
+const NIGHT_REMIND_NY = 15 * 60 + 30;
+
+function newYorkNow(now: Date): { iso: string; minutes: number } {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .map((p) => [p.type, p.value])
+  );
+  return { iso: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+// Elle girilen fiyat hangi kapanışa ait sayılır: o günün kapanışı TradingView'a
+// düştüyse (New York 15:00 sonrası) o gün, değilse bir önceki iş günü.
 export function defaultEntryDate(now = new Date()): string {
-  const today = isoLocal(now);
-  if (!isWeekend(today) && now.getHours() >= SAME_DAY_FROM_HOUR) return today;
-  return prevBusinessDay(today);
+  const ny = newYorkNow(now);
+  if (!isWeekend(ny.iso) && ny.minutes >= SETTLE_VISIBLE_NY) return ny.iso;
+  return prevBusinessDay(ny.iso);
+}
+
+// O günün kapanışının Türkiye saatiyle ne zaman görüneceği ("22:00" / "23:00").
+export function settleVisibleTr(now = new Date()): string {
+  const ny = newYorkNow(now);
+  const trMinutes = now.getHours() * 60 + now.getMinutes();
+  let diff = trMinutes - ny.minutes;
+  if (diff < 0) diff += 24 * 60;
+  const m = (SETTLE_VISIBLE_NY + diff) % (24 * 60);
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
 const TR_MONTHS_SHORT = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
@@ -374,7 +407,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   const latestDates = FUELS.map((f) => calc[f.key].latest?.tarih).filter(Boolean) as string[];
   if (latestDates.length === 0) {
     return (
-      "📈 <b>Zam/İndirim Tahmini</b>\nHenüz piyasa verisi girilmedi.\n\n" + ENTRY_HELP
+      "📈 <b>Zam/İndirim Tahmini</b>\nHenüz piyasa verisi girilmedi.\n\n" + entryHelp()
     );
   }
   const tarih = latestDates.sort().pop()!;
@@ -426,12 +459,17 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   return lines.join("\n");
 }
 
-export const ENTRY_HELP =
-  "Her sabah (09:00–10:00) TradingView'dan dünkü kapanışı yazın:\n" +
-  "• Motorin: <b>NYMEX:Z62!</b>\n• Benzin: <b>NYMEX:A3G2!</b>\n" +
-  "Örnek: <code>z6 1025,3 a3g 985,3</code>\n" +
-  "Geçmiş bir gün için tarih ekleyin: <code>z6 1025,3 a3g 985,3 20.10</code>\n" +
-  "Durumu görmek için: /piyasa";
+export function entryHelp(): string {
+  return (
+    // Saat ekleri (22:00'den / 23:00'ten) değiştiği için "saat ... sonrası" yazılır.
+    `En erken tahmin için o günün kapanışını hafta içi saat ~${settleVisibleTr()} sonrası ` +
+    "TradingView'a düşünce yazın. Gece giremezseniz sabah yazın; dünkü kapanış sayılır.\n" +
+    "• Motorin: <b>NYMEX:Z62!</b>\n• Benzin: <b>NYMEX:A3G2!</b>\n" +
+    "Örnek: <code>z6 1025,3 a3g 985,3</code>\n" +
+    "Geçmiş bir gün için tarih ekleyin: <code>z6 1025,3 a3g 985,3 20.10</code>\n" +
+    "Durumu görmek için: /piyasa"
+  );
+}
 
 // --- Giriş ayrıştırma ------------------------------------------------------------
 
@@ -526,7 +564,7 @@ export async function saveQuote(input: {
   const tarih = input.tarih || defaultEntryDate();
   const z6 = input.z6 ?? null;
   const a3g = input.a3g ?? null;
-  if (z6 == null && a3g == null) return { ok: false, text: "En az bir fiyat girin.\n\n" + ENTRY_HELP };
+  if (z6 == null && a3g == null) return { ok: false, text: "En az bir fiyat girin.\n\n" + entryHelp() };
   for (const [label, v] of [["Motorin (Z62!)", z6], ["Benzin (A3G2!)", a3g]] as const) {
     if (v != null && (v < MIN_PRICE || v > MAX_PRICE))
       return {
@@ -598,8 +636,8 @@ export async function handleTelegramEntry(chatId: string, text: string): Promise
   const lower = text.trim().toLocaleLowerCase("tr");
   if (lower === "/piyasa" || lower === "/zam" || lower === "piyasa") return buildStatusText();
   const parsed = parseEntryText(text);
-  if (!parsed) return ENTRY_HELP;
-  if (parsed.error) return `${parsed.error}\n\n${ENTRY_HELP}`;
+  if (!parsed) return entryHelp();
+  if (parsed.error) return `${parsed.error}\n\n${entryHelp()}`;
   const r = await saveQuote({ tarih: parsed.tarih, z6: parsed.z6, a3g: parsed.a3g, by: chatId });
   return r.text;
 }
@@ -629,9 +667,8 @@ async function checkPumpChanges(today: string): Promise<void> {
   await sendToChats(subscriberIds(), ["⛽ <b>Pompa fiyatı değişti</b> (Petrol Ofisi, Sakarya)", ...lines].join("\n"));
 }
 
-async function remindMissing(today: string): Promise<void> {
-  setSetting("ff_reminded", today);
-  const want = prevBusinessDay(today);
+// want: girilmesi beklenen kapanış günü. night: kapanış az önce TradingView'a düştü.
+async function remindMissing(want: string, night: boolean): Promise<void> {
   const row = getDb().prepare("SELECT 1 FROM market_quotes WHERE tarih = ?").get(want);
   if (row) return;
   // Hatırlatma, en son veri giren kişiye gider (portaldan girildiyse kimseye).
@@ -641,8 +678,11 @@ async function remindMissing(today: string): Promise<void> {
   if (!last) return;
   await sendToChats(
     [last.entered_by],
-    `⏰ ${fmtDay(want)} kapanışı için Akdeniz fiyatı girilmedi.\n` +
-      `TradingView'dan değerleri yazın, ör. <code>z6 1025,3 a3g 985,3 ${parseIso(want).getDate()}.${parseIso(want).getMonth() + 1}</code>`
+    night
+      ? `🔔 Bugünün (${fmtDay(want)}) kapanışı TradingView'a düşmüş olmalı. En erken tahmin için şimdi yazın, ör. <code>z6 1025,3 a3g 985,3</code>\n` +
+          "Rakam dünküyle aynıysa birkaç dakika sonra tekrar bakın."
+      : `⏰ ${fmtDay(want)} kapanışı için Akdeniz fiyatı girilmedi.\n` +
+          `TradingView'dan değerleri yazın, ör. <code>z6 1025,3 a3g 985,3 ${parseIso(want).getDate()}.${parseIso(want).getMonth() + 1}</code>`
   );
 }
 
@@ -656,9 +696,23 @@ async function tick(): Promise<void> {
   if (minutes >= 8 * 60 + 30 && minutes < 14 * 60 && getSetting("ff_pump_checked") !== today) {
     await checkPumpChanges(today);
   }
+  // Sabah: dünkü kapanış girilmediyse.
   const wd = now.getDay();
   if (wd >= 1 && wd <= 5 && minutes >= 10 * 60 + 30 && getSetting("ff_reminded") !== today) {
-    await remindMissing(today);
+    setSetting("ff_reminded", today);
+    await remindMissing(defaultEntryDate(now), false);
+  }
+  // Gece: o günün kapanışı TradingView'a düştükten yarım saat sonra.
+  const ny = newYorkNow(now);
+  if (
+    cfg.geceHatirlatma &&
+    !isWeekend(ny.iso) &&
+    ny.minutes >= NIGHT_REMIND_NY &&
+    ny.minutes < 18 * 60 &&
+    getSetting("ff_reminded_night") !== ny.iso
+  ) {
+    setSetting("ff_reminded_night", ny.iso);
+    await remindMissing(ny.iso, true);
   }
 }
 

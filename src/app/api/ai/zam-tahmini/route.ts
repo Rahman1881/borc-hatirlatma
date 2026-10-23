@@ -7,6 +7,7 @@ import {
   getForecastConfig,
   listQuotes,
   parsePrice,
+  settleVisibleTr,
   saveForecastConfig,
   saveQuote,
   setChangeIgnored,
@@ -41,6 +42,7 @@ function snapshot() {
   return {
     config,
     defaultTarih: defaultEntryDate(),
+    settleTime: settleVisibleTr(),
     latest: { motorin: calc.motorin.latest, benzin: calc.benzin.latest },
     lastChange: { motorin: calc.motorin.lastChange, benzin: calc.benzin.lastChange },
     quotes,

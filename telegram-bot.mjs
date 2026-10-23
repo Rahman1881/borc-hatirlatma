@@ -277,8 +277,9 @@ Bana istasyonla ilgili soru sorabilirsiniz. Örnek:
 🚗 <b>Plaka sorgusu:</b> Sadece plakayı yazın (ör. <code>54 ABC 123</code>).
 Müşterinin yeni mi olduğunu, en son ne zaman geldiğini hemen görürsünüz.
 
-📈 <b>Zam/İndirim Tahmini:</b> Her sabah TradingView'dan dünkü Akdeniz fiyatlarını yazın
-(ör. <code>z6 1025,3 a3g 985,3</code>). Durum için /piyasa
+📈 <b>Zam/İndirim Tahmini:</b> Akdeniz fiyatlarını TradingView'dan yazın
+(ör. <code>z6 1025,3 a3g 985,3</code>). En erken tahmin için gece ~22:00–23:00
+sonrası, olmazsa sabah. Durum için /piyasa
 
 Komutlar:
 /rapor — Günlük satış raporu

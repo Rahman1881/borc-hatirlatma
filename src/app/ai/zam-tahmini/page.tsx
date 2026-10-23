@@ -27,6 +27,7 @@ type Config = {
   yogunlukBenzin: number;
   eselPay: number;
   gunlukDurum: boolean;
+  geceHatirlatma: boolean;
   yoksay: string[];
 };
 type Quote = {
@@ -41,6 +42,7 @@ type Quote = {
 type Data = {
   config: Config;
   defaultTarih: string;
+  settleTime: string;
   latest: Record<Fuel, FuelRow | null>;
   lastChange: Record<Fuel, PumpChange | null>;
   quotes: Quote[];
@@ -263,7 +265,9 @@ export default function ZamTahminiPage() {
         <p className="mt-0.5 text-xs text-muted-foreground">
           Telegram botuna da yazılabilir: <code className="rounded bg-muted px-1">z6 1025,3 a3g 985,3</code> · geçmiş gün
           için sonuna tarih: <code className="rounded bg-muted px-1">20.10</code>. Kur TCMB&apos;den otomatik alınır.
-          En sağlamı sabah girmek: 23:00&apos;ten önce girilen değer bir önceki iş gününün kapanışı sayılır.
+          <b className="text-foreground">En erken tahmin:</b> o günün kapanışı TradingView&apos;a hafta içi saat
+          ~{data.settleTime} sonrası düşer; o saatten sonra girilen değer o günün, öncesinde girilen bir önceki iş
+          gününün kapanışı sayılır.
         </p>
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1">
@@ -454,6 +458,15 @@ export default function ZamTahminiPage() {
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={cfg.gunlukDurum} onChange={(e) => setCfg({ ...cfg, gunlukDurum: e.target.checked })} />
               Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={cfg.geceHatirlatma}
+                onChange={(e) => setCfg({ ...cfg, geceHatirlatma: e.target.checked })}
+              />
+              Gece hatırlatması: kapanış TradingView&apos;a düştükten yarım saat sonra girilmediyse son giren kişiye
+              Telegram&apos;dan haber ver
             </label>
             <p className="text-xs text-muted-foreground">
               Eşik ve ortalama, sektörde konuşulan kurala göre (%3, 5 kapanış) başlar; gerçekleşen değişikliklere bakarak
