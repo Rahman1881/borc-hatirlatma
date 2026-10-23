@@ -140,8 +140,8 @@ function initDb(db: Database.Database) {
 
     -- Zam/İndirim Tahmini (src/lib/fuel-forecast.ts). market_prices: her iş günü Londra
     -- 16:30'daki ABD motorin (HO) / benzin (RB) vadelisi ($/galon, Yahoo) ve TCMB kuru;
-    -- kontrat değişince seri zincirlenir. pump_prices: Opet Serdivan arşivinden yalnız
-    -- fiyatın değiştiği günler (gerçekleşen zam/indirimler).
+    -- kontrat değişince seri zincirlenir. pump_prices: Petrol Ofisi Serdivan arşivinden
+    -- günlük pompa fiyatları (gerçekleşen zam/indirimler buradan çıkarılır).
     CREATE TABLE IF NOT EXISTS market_prices (
       tarih TEXT PRIMARY KEY,     -- YYYY-MM-DD (Londra işlem günü)
       ho REAL,

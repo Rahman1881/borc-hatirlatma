@@ -272,8 +272,8 @@ export default function ZamTahminiPage() {
             <p className="text-sm font-semibold">Veri</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               Piyasa: Yahoo Finance — ABD motorin (Heating Oil) ve benzin (RBOB) vadelileri, her gün Londra 16:30
-              fiyatı (Platts/ICE kapanışıyla aynı an). Kur: TCMB. Gerçekleşen değişiklikler: Opet Serdivan fiyat
-              arşivi.
+              fiyatı (Platts/ICE kapanışıyla aynı an). Kur: TCMB. Gerçekleşen değişiklikler: Petrol Ofisi
+              Serdivan fiyat arşivi.
               {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
             </p>
           </div>
@@ -301,7 +301,7 @@ export default function ZamTahminiPage() {
 
       {/* Gerçekleşen değişiklikler */}
       <Panel>
-        <p className="text-sm font-semibold">Gerçekleşen pompa değişiklikleri (Opet Serdivan)</p>
+        <p className="text-sm font-semibold">Gerçekleşen pompa değişiklikleri (Petrol Ofisi Serdivan)</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Modelin değişiklikten önceki son kapanışta söylediğiyle karşılaştırma. 0,30 TL&apos;nin altındaki marj
           oynamaları sayılmaz. ÖTV artışı gibi piyasa dışı değişiklikleri &quot;baz say&quot; işaretini kaldırarak

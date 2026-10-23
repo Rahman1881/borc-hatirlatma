@@ -15,7 +15,7 @@ import {
 
 // Portal → Zam/İndirim Tahmini sayfası.
 //  GET  → durum, piyasa verisi, gerçekleşen değişiklikler, ayarlar
-//  POST { action: "refresh" } → Yahoo + Opet'ten şimdi çek
+//  POST { action: "refresh" } → Yahoo + Petrol Ofisi'nden şimdi çek
 //       { action: "config", ...ayarlar } | { action: "ignore", tarih, yakit, ignored }
 
 function snapshot() {

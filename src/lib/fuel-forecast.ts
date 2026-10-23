@@ -1,4 +1,5 @@
 import getDb from "@/lib/db";
+import { ensureDailyPrices } from "@/lib/fuel-prices";
 import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 
 // Zam/İndirim Tahmini. Türkiye'de rafineri fiyatı Akdeniz ürün fiyatı (Platts) × TCMB
@@ -10,9 +11,10 @@ import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 //    her iş günü Londra 16:30'daki fiyat — Platts/ICE Avrupa kapanışıyla aynı an. Platts
 //    ücretli; TradingView'daki Platts kontratları (Z6/A3G) işlem görmediği için günlerce
 //    aynı kalıyor. ABD motorini Avrupa motoriniyle sıkı bağlı; 2023–2026 geçmiş testinde
-//    (FRED spot + Opet değişiklikleri) motorinde en iyi sonuç bununla alındı.
+//    (FRED spot + gerçek pompa değişiklikleri) motorinde en iyi sonuç bununla alındı.
 //  • Kur: TCMB günlük dolar satış kuru.
-//  • Gerçekleşen değişiklikler: Opet'in Serdivan fiyat arşivi (yalnız değişiklik günleri).
+//  • Gerçekleşen değişiklikler: Petrol Ofisi'nin Serdivan fiyat arşivi (her gün); bugünün
+//    fiyatı arşive ertesi gün düştüğü için sabah güncel fiyat sayfasından eklenir.
 //
 // Kontrat: her ay bir sonraki ayın kontratı (Ekim'de Kasım). Yahoo'nun sürekli serisi
 // (HO=F) geçişi vadeden önce rastgele yaptığı ve aylar arası fark büyük olduğu için
@@ -92,7 +94,9 @@ const FUELS = [
   { key: "benzin", col: "rb", kcol: "rb_kontrat", root: "RB", label: "Benzin", icon: "⛽" },
 ] as const;
 
-const OPET = { il: 54, ilce: "054017", ad: "Opet Serdivan" };
+// Petrol Ofisi arşivi: il ve ilçe kodları sitenin kendi kodları (District/Search).
+const PO = { cityId: "54", districtId: "05416", ad: "Petrol Ofisi Serdivan", il: "Sakarya", ilce: "Serdivan", plaka: 54 };
+const PUMP_SOURCE = "po"; // kaynak değişirse pompa geçmişi silinip yeniden doldurulur
 // Bu tutarın altındaki pompa farkları dağıtıcı/bayi marjı oynamasıdır, rafineri
 // değişikliği sayılmaz (baz sıfırlanmaz).
 const MIN_PUMP_CHANGE = 0.3;
@@ -298,26 +302,36 @@ async function londonSnapshots(symbol: string): Promise<Map<string, number> | nu
   return out;
 }
 
-// Opet Serdivan fiyat arşivi: yalnız fiyatın değiştiği günler.
-async function fetchOpetArchive(
-  from: string,
-  to: string
-): Promise<{ tarih: string; benzin?: number; motorin?: number }[]> {
-  const res = await fetch(
-    `https://api.opet.com.tr/api/fuelprices/prices/archive?ProvinceCode=${OPET.il}&DistrictCode=${OPET.ilce}` +
-      `&StartDate=${from}&EndDate=${to}&IncludeAllProducts=true`,
-    { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30_000) }
-  );
-  if (!res.ok) throw new Error(`Opet arşivi: HTTP ${res.status}`);
-  const arr = (await res.json()) as { day: string; prices: { productShortName: string; amount: number }[] }[];
-  return arr.map((d) => {
-    const p = new Map(d.prices.map((x) => [x.productShortName, x.amount]));
-    return {
-      tarih: d.day.slice(0, 10),
-      benzin: p.get("KURS") || undefined,
-      motorin: p.get("MT_ULT") || p.get("MT_ECO") || undefined,
-    };
+// Petrol Ofisi fiyat arşivi (sitedeki "Arşiv Fiyatları" sayfasının isteği): her gün için
+// KDV dahil V/Max Kurşunsuz 95 ve V/Max Diesel — güncel fiyat sayfasıyla aynı ürünler.
+async function fetchPoArchive(from: string, to: string): Promise<{ tarih: string; benzin?: number; motorin?: number }[]> {
+  const res = await fetch("https://www.petrolofisi.com.tr/Fuel/Search", {
+    method: "POST",
+    headers: { "User-Agent": "Mozilla/5.0", "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ template: "3", cityId: PO.cityId, districtId: PO.districtId, startDate: from, endDate: to }),
+    signal: AbortSignal.timeout(60_000),
   });
+  if (!res.ok) throw new Error(`Petrol Ofisi arşivi: HTTP ${res.status}`);
+  const html = await res.text();
+  const strip = (t: string) => t.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+  const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
+    [...m[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g)].map((c) => strip(c[1]).trim())
+  );
+  const head = rows.find((r) => r[0] === "Tarih");
+  if (!head) throw new Error("Petrol Ofisi arşivi okunamadı (tablo bulunamadı).");
+  const iB = head.indexOf("V/Max Kurşunsuz 95");
+  const iM = head.indexOf("V/Max Diesel");
+  const first = (t: string | undefined) => {
+    const m = t?.match(/(\d+\.\d+)/);
+    return m ? Number(m[1]) : undefined;
+  };
+  const out: { tarih: string; benzin?: number; motorin?: number }[] = [];
+  for (const r of rows) {
+    const d = r[0]?.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if (!d) continue;
+    out.push({ tarih: `${d[3]}-${d[2]}-${d[1]}`, benzin: first(r[iB]), motorin: first(r[iM]) });
+  }
+  return out;
 }
 
 // --- Veri ----------------------------------------------------------------------
@@ -327,18 +341,28 @@ export function listPrices(): PriceRow[] {
 }
 
 export async function refreshPumpPrices(days: number): Promise<number> {
+  const db = getDb();
+  if (getSetting("ff_pump_source") !== PUMP_SOURCE) {
+    db.prepare("DELETE FROM pump_prices").run();
+    setSetting("ff_pump_source", PUMP_SOURCE);
+    days = Math.max(days, 420);
+  }
   const today = isoLocal(new Date());
-  const stmt = getDb().prepare("INSERT OR REPLACE INTO pump_prices (tarih, yakit, fiyat) VALUES (?, ?, ?)");
-  let n = 0;
-  for (let from = addDays(today, -days); from <= today; from = addDays(from, 90)) {
-    const end = addDays(from, 89);
-    for (const r of await fetchOpetArchive(from, end < today ? end : today)) {
-      if (r.motorin) stmt.run(r.tarih, "motorin", r.motorin);
-      if (r.benzin) stmt.run(r.tarih, "benzin", r.benzin);
-      n++;
+  const stmt = db.prepare("INSERT OR REPLACE INTO pump_prices (tarih, yakit, fiyat) VALUES (?, ?, ?)");
+  const rows = await fetchPoArchive(addDays(today, -days), today);
+  for (const r of rows) {
+    if (r.motorin) stmt.run(r.tarih, "motorin", r.motorin);
+    if (r.benzin) stmt.run(r.tarih, "benzin", r.benzin);
+  }
+  // Bugünün fiyatı arşive ertesi gün düşer; güncel fiyat sayfasından ekle.
+  if (!rows.some((r) => r.tarih === today)) {
+    const info = await ensureDailyPrices(PO.plaka, PO.il, PO.ilce).catch(() => null);
+    for (const p of info?.rows ?? []) {
+      if (p.tarih !== today || !p.marka.toLocaleLowerCase("tr").includes("petrol ofisi")) continue;
+      if (p.yakit === "motorin" || p.yakit === "benzin") stmt.run(today, p.yakit, p.fiyat);
     }
   }
-  return n;
+  return rows.length;
 }
 
 export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
@@ -635,7 +659,7 @@ async function checkPumpChanges(today: string): Promise<void> {
       );
   }
   if (lines.length === 0 || !isTelegramConfigured()) return;
-  await sendToChats(subscriberIds(), [`⛽ <b>Pompa fiyatı değişti</b> (${OPET.ad})`, ...lines].join("\n"));
+  await sendToChats(subscriberIds(), [`⛽ <b>Pompa fiyatı değişti</b> (${PO.ad})`, ...lines].join("\n"));
 }
 
 // --- Zamanlayıcı ---------------------------------------------------------------
@@ -667,7 +691,7 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 2) Pompa: fiyatlar 00:01'de değişir; sabah Opet arşivinden kontrol.
+  // 2) Pompa: fiyatlar 00:01'de değişir; sabah Petrol Ofisi'nden kontrol.
   const today = isoLocal(now);
   const minutes = now.getHours() * 60 + now.getMinutes();
   if (minutes >= 8 * 60 + 30 && minutes < 14 * 60 && getSetting("ff_pump_checked") !== today) {
@@ -675,11 +699,12 @@ async function tick(): Promise<void> {
   }
 }
 
-// İlk açılışta: pompa geçmişi (Opet, ~14 ay) ve son 45 günün piyasa verisi.
+// İlk açılışta (ya da pompa kaynağı değişince): pompa geçmişi (Petrol Ofisi, ~14 ay) ve son
+// 45 günün piyasa verisi.
 export async function bootstrapForecast(): Promise<void> {
   const db = getDb();
   const pumps = (db.prepare("SELECT COUNT(*) AS n FROM pump_prices").get() as { n: number }).n;
-  if (pumps === 0) await refreshPumpPrices(420);
+  if (pumps === 0 || getSetting("ff_pump_source") !== PUMP_SOURCE) await refreshPumpPrices(420);
   const prices = (db.prepare("SELECT COUNT(*) AS n FROM market_prices").get() as { n: number }).n;
   if (prices < 5) await refreshMarket();
 }
