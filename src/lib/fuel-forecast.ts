@@ -708,7 +708,6 @@ export function buildStatusText(cfg = getForecastConfig()): string {
         `ℹ️ ${f.label}: son değişiklikten önceki piyasa verisi yok; sapma ${fmtDay(r.baseTarih)} kapanışından hesaplanıyor.`
       );
   }
-  lines.push("<i>Tahmindir; geçmiş testte motorin alarmlarının ~3'te 2'si tuttu.</i>");
   return lines.join("\n");
 }
 
