@@ -686,9 +686,12 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   const row = listPrices().find((p) => p.tarih === tarih);
   if (row) {
     const parts = [
-      row.ice != null ? `Avrupa motorin (ICE) ${fmtNum(row.ice, 2)} $/t` : null,
-      row.ho != null ? `ABD motorin ${fmtNum(row.ho, 3)} $/gal` : null,
-      row.rb != null ? `ABD benzin ${fmtNum(row.rb, 3)} $/gal` : null,
+      // ICE yoksa motorin ABD verisinden hesaplandığı için onu gösterir.
+      row.ice != null
+        ? `Avrupa motorin (ICE) ${fmtNum(row.ice, 2)} $/t`
+        : row.ho != null
+          ? `ABD motorin ${fmtNum(row.ho, 3)} $/gal`
+          : null,
       row.brent != null ? `Brent ${fmtNum(row.brent, 1)} $` : null,
     ].filter(Boolean);
     lines.push(`Kur ${fmtNum(row.usd, 4)} · ${parts.join(" · ")}`);

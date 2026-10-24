@@ -388,8 +388,6 @@ export default function ZamTahminiPage() {
                 <tr className="border-b text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">Gün</th>
                   <th className="py-2 pr-3 font-medium">Avrupa motorin (ICE) $/t</th>
-                  <th className="py-2 pr-3 font-medium">ABD motorin $/gal</th>
-                  <th className="py-2 pr-3 font-medium">ABD benzin $/gal</th>
                   <th className="py-2 pr-3 font-medium">Brent $</th>
                   <th className="py-2 pr-3 font-medium">Kur</th>
                   <th className="py-2 pr-3 font-medium">Motorin sapma</th>
@@ -403,14 +401,6 @@ export default function ZamTahminiPage() {
                     <td className="py-2 pr-3">
                       {q.ice != null ? num(q.ice, 2) : "—"}{" "}
                       <span className="text-xs text-muted-foreground">{q.ice_kontrat?.replace("ICE ", "") ?? ""}</span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      {q.ho != null ? num(q.ho, 3) : "—"}{" "}
-                      <span className="text-xs text-muted-foreground">{kontratAd(q.ho_kontrat)}</span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      {q.rb != null ? num(q.rb, 3) : "—"}{" "}
-                      <span className="text-xs text-muted-foreground">{kontratAd(q.rb_kontrat)}</span>
                     </td>
                     <td className="py-2 pr-3">{q.brent != null ? num(q.brent, 1) : "—"}</td>
                     <td className="py-2 pr-3">{num(q.usd, 4)}</td>
