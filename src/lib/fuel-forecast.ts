@@ -14,6 +14,7 @@ import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 //  • Benzin (ve motorin yedeği): Yahoo Finance'ten ABD benzin (RBOB) ve motorin (NYMEX Heating
 //    Oil) vadelileri, her iş günü Londra 16:30'daki fiyat. Platts ücretli; TradingView'daki
 //    Platts kontratları (Z6/A3G) işlem görmediği için günlerce aynı kalıyor.
+//  • Brent (yalnız bilgi, hesaba girmez): ICE Brent önündeki ay kontratı — haberlerdeki "Brent".
 //  • Kur: TCMB günlük dolar satış kuru.
 //  • Gerçekleşen değişiklikler: Petrol Ofisi'nin Serdivan fiyat arşivi (her gün); bugünün
 //    fiyatı arşive ertesi gün düştüğü için sabah güncel fiyat sayfasından eklenir.
@@ -339,21 +340,23 @@ async function fetchPoArchive(from: string, to: string): Promise<{ tarih: string
   return out;
 }
 
-// ICE Low Sulphur Gasoil: ice.com ürün sayfasının grafik verisi. Önündeki ay kontratı listenin
-// ilk sırasındadır; günlük çubuklar kapanış (settlement, Londra 16:28–16:30) fiyatıdır.
+// ICE: ice.com ürün sayfalarının grafik verisi. Önündeki ay kontratı listenin ilk sırasındadır;
+// günlük çubuklar kapanış (settlement) fiyatıdır — gasoil Londra 16:30, Brent 19:30.
 const ICE_BASE = "https://www.ice.com/marketdata/api/productguide/charting";
-const ICE_PRODUCT = { productId: 5817, hubId: 9373 };
+type IceProduct = { productId: number; hubId: number; page: string };
+const ICE_GASOIL: IceProduct = { productId: 5817, hubId: 9373, page: "34361119/Low-Sulphur-Gasoil-Futures" };
+const ICE_BRENT: IceProduct = { productId: 254, hubId: 403, page: "219/Brent-Crude-Futures" };
 const ICE_MONTHS: Record<string, string> = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
 };
 
-async function iceJson<T>(path: string): Promise<T> {
+async function iceJson<T>(product: IceProduct, path: string): Promise<T> {
   const res = await fetch(`${ICE_BASE}/${path}`, {
     headers: {
       "User-Agent": "Mozilla/5.0",
       Accept: "application/json",
-      Referer: "https://www.ice.com/products/34361119/Low-Sulphur-Gasoil-Futures/data",
+      Referer: `https://www.ice.com/products/${product.page}/data`,
     },
     signal: AbortSignal.timeout(20_000),
   });
@@ -370,13 +373,19 @@ function iceTime(s: string): { iso: string; minutes: number } | null {
 
 // Önündeki ay kontratının günlük kapanışları (son ~3 ay); `today` kapanışı henüz
 // yayınlanmadıysa o günün Londra 16:30 fiyatı gün içi verisinden eklenir.
-async function iceDaily(today: string, now: Date): Promise<{ kontrat: string; prices: Map<string, number> }> {
+async function iceDaily(
+  product: IceProduct,
+  today: string,
+  now: Date
+): Promise<{ kontrat: string; prices: Map<string, number> }> {
   const list = await iceJson<{ marketId: number; marketStrip: string }[]>(
-    `contract-data?productId=${ICE_PRODUCT.productId}&hubId=${ICE_PRODUCT.hubId}&mode=2`
+    product,
+    `contract-data?productId=${product.productId}&hubId=${product.hubId}&mode=2`
   );
   const front = list[0];
   if (!front) throw new Error("ICE: kontrat listesi boş.");
   const hist = await iceJson<{ bars?: [string, number][] }>(
+    product,
     `data/historical?marketId=${front.marketId}&historicalSpan=1`
   );
   const prices = new Map<string, number>();
@@ -392,7 +401,10 @@ async function iceDaily(today: string, now: Date): Promise<{ kontrat: string; pr
     if (offset < -720) offset += 1440;
     if (offset > 720) offset -= 1440;
     const cutoff = SNAPSHOT_LONDON - offset - 10;
-    const day = await iceJson<{ bars?: [string, number][] }>(`data/current-day?mode=2&marketId=${front.marketId}`);
+    const day = await iceJson<{ bars?: [string, number][] }>(
+      product,
+      `data/current-day?mode=2&marketId=${front.marketId}`
+    );
     let snap: number | null = null;
     for (const [t, v] of day.bars ?? []) {
       const z = iceTime(t);
@@ -480,8 +492,17 @@ export async function refreshMarket(now = new Date()): Promise<{ added: string[]
     const need = new Set([...days.map((d) => contractFor(d, f.root)), contractFor(latest, f.root)]);
     for (const sym of need) if (!snaps.has(sym)) snaps.set(sym, await londonSnapshots(sym));
   }
-  const brent = await londonSnapshots("BZ=F").catch(() => null);
-  const ice = await iceDaily(latest, now).catch((e) => {
+  // Brent (yalnız bilgi): ICE önündeki ay kontratı. Yahoo'nun BZ=F serisi vadeden önce bir
+  // sonraki kontrata geçtiği için kullanılmaz. Kontrat değişince geçmiş günler yeni kontratla
+  // yeniden yazılmasın diye yalnız son 3 iş günü güncellenir (16:30 fiyatı → kesin kapanış).
+  const brent = await iceDaily(ICE_BRENT, latest, now).catch((e) => {
+    console.error("[zam-tahmini] ICE Brent alınamadı:", e instanceof Error ? e.message : e);
+    return null;
+  });
+  // Kaynak Yahoo'dan ICE'a geçtiğinde bir kez bütün pencere düzeltilir.
+  const brentFix = brent != null && getSetting("ff_brent_source") !== "ice";
+  const brentDays = new Set(brentFix ? days : days.slice(-3));
+  const ice = await iceDaily(ICE_GASOIL, latest, now).catch((e) => {
     console.error("[zam-tahmini] ICE verisi alınamadı, motorinde ABD verisi kullanılacak:", e instanceof Error ? e.message : e);
     return null;
   });
@@ -516,7 +537,7 @@ export async function refreshMarket(now = new Date()): Promise<{ added: string[]
       yahoo[0]?.k ?? null,
       yahoo[1]?.v ?? null,
       yahoo[1]?.k ?? null,
-      brent?.get(d) ?? prev?.brent ?? null,
+      (prev?.brent == null || brentDays.has(d) ? brent?.prices.get(d) : undefined) ?? prev?.brent ?? null,
       iceVal?.v ?? null,
       iceVal?.k ?? null,
       usd,
@@ -524,6 +545,7 @@ export async function refreshMarket(now = new Date()): Promise<{ added: string[]
     );
     if (!prev) added.push(d);
   }
+  if (brentFix) setSetting("ff_brent_source", "ice");
   return { added, latest };
 }
 
