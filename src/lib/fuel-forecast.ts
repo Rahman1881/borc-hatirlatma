@@ -6,22 +6,20 @@ import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 // dolar kuruyla oluşur; son değişiklikten beri bu maliyet belli bir oranı aşınca pompaya
 // zam ya da indirim gelir. Resmi formül yayınlanmadığı için eşik ve ortalama ayardır.
 //
-// Veri (otomatik, ücretsiz):
-//  • Motorin: Avrupa motorini — ICE Low Sulphur Gasoil, önündeki ay kontratının Londra 16:30
-//    kapanışı ($/ton). Platts Akdeniz motorini bu kontrata göre fiyatlanır. ice.com'un kendi
-//    grafik verisinden günde 2–3 istekle alınır (kullanıcı kararı; site şartları otomatik
-//    erişimi kısıtlıyor). Gelmediği gün yerine ABD motorini (aşağıda) kullanılır.
-//  • Benzin (ve motorin yedeği): Yahoo Finance'ten ABD benzin (RBOB) ve motorin (NYMEX Heating
-//    Oil) vadelileri, her iş günü Londra 16:30'daki fiyat. Platts ücretli; TradingView'daki
-//    Platts kontratları (Z6/A3G) işlem görmediği için günlerce aynı kalıyor.
-//  • Brent (yalnız bilgi, hesaba girmez): ICE Brent önündeki ay kontratı — haberlerdeki "Brent".
+// Veri (otomatik, ücretsiz) — hepsi ICE'tan (ice.com ürün sayfalarının grafik verisi; site
+// şartları otomatik erişimi kısıtlıyor, kullanıcı kararıyla kullanılıyor):
+//  • Motorin: ICE Low Sulphur Gasoil (Avrupa motorini) — Platts Akdeniz motorini buna göre fiyatlanır.
+//  • Benzin: ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini) — Türkiye'nin benzin bazı.
+//  • Brent (yalnız bilgi, hesaba girmez): ICE Brent.
+//  Her biri önündeki ay kontratının günlük kapanışı ($/ton, Brent $/varil); günün kapanışı henüz
+//  yayınlanmadıysa Londra 16:30 fiyatı gün içi veriden alınır. Veri gelmezse yedek kaynak yoktur;
+//  o gün Telegram'dan hata bildirilir.
 //  • Kur: TCMB günlük dolar satış kuru.
 //  • Gerçekleşen değişiklikler: Petrol Ofisi'nin Serdivan fiyat arşivi (her gün); bugünün
 //    fiyatı arşive ertesi gün düştüğü için sabah güncel fiyat sayfasından eklenir.
 //
-// Kontrat: her ay bir sonraki ayın kontratı (Ekim'de Kasım). Yahoo'nun sürekli serisi
-// (HO=F) geçişi vadeden önce rastgele yaptığı ve aylar arası fark büyük olduğu için
-// kullanılmaz; kontrat değişince seri zincirlenir (o günün oranı 1 sayılır).
+// Kontrat değişince (vade dolunca) seri zincirlenir (o günün oranı 1 sayılır). Daha önce
+// kullanılan Yahoo (ABD motorin/benzin) ve TradingView (Platts Z6/A3G) kaynakları kaldırıldı.
 
 export type Fuel = "motorin" | "benzin";
 export type Level = "zam" | "zam_yakin" | "notr" | "indirim_yakin" | "indirim";
@@ -53,13 +51,15 @@ export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
 
 export type PriceRow = {
   tarih: string; // Londra işlem günü
-  ho: number | null; // $/galon
+  ho: number | null; // eski (Yahoo ABD motorin, artık yazılmıyor)
   ho_kontrat: string | null;
-  rb: number | null;
+  rb: number | null; // eski (Yahoo ABD benzin, artık yazılmıyor)
   rb_kontrat: string | null;
   brent: number | null; // $/varil (bilgi)
-  ice: number | null; // Avrupa motorini, $/ton
+  ice: number | null; // Avrupa motorini (ICE gasoil), $/ton
   ice_kontrat: string | null; // ör. "ICE Nov26"
+  med: number | null; // Akdeniz benzini (ICE/Platts Med), $/ton
+  med_kontrat: string | null;
   usd: number;
   fetched_at: number;
 };
@@ -75,8 +75,8 @@ export type PumpChange = {
 
 export type FuelRow = {
   tarih: string;
-  raw: number; // ICE: $/ton, Yahoo: $/galon
-  kontrat: string; // "ICE Nov26" ya da "HOX26.NYM"
+  raw: number; // $/ton
+  kontrat: string; // ör. "ICE Nov26"
   usd: number;
   pct: number; // son değişiklikteki baza göre sapma (%)
   tl: number; // pompaya yansıması beklenen TL/litre (KDV dahil)
@@ -94,9 +94,37 @@ export type FuelCalc = {
   changes: (PumpChange & { estimate: FuelRow | null })[];
 };
 
+// ICE ürünleri: grafik verisi için ürün/hub kimlikleri ve ürün sayfası.
+type IceProduct = { productId: number; hubId: number; page: string };
+const ICE_GASOIL: IceProduct = { productId: 5817, hubId: 9373, page: "34361119/Low-Sulphur-Gasoil-Futures" };
+const ICE_MED_GASOLINE: IceProduct = {
+  productId: 3558,
+  hubId: 4148,
+  page: "6753555/Premium-Unleaded-Gasoline-10ppm-FOB-Med-Cargoes-Future",
+};
+const ICE_BRENT: IceProduct = { productId: 254, hubId: 403, page: "219/Brent-Crude-Futures" };
+
 const FUELS = [
-  { key: "motorin", col: "ho", kcol: "ho_kontrat", root: "HO", label: "Motorin", icon: "🛢" },
-  { key: "benzin", col: "rb", kcol: "rb_kontrat", root: "RB", label: "Benzin", icon: "⛽" },
+  {
+    key: "motorin",
+    col: "ice",
+    kcol: "ice_kontrat",
+    product: ICE_GASOIL,
+    litrePerTon: 1000 / 0.845,
+    label: "Motorin",
+    icon: "🛢",
+    source: "Avrupa motorin (ICE)",
+  },
+  {
+    key: "benzin",
+    col: "med",
+    kcol: "med_kontrat",
+    product: ICE_MED_GASOLINE,
+    litrePerTon: 1000 / 0.745,
+    label: "Benzin",
+    icon: "⛽",
+    source: "Akdeniz benzin (ICE)",
+  },
 ] as const;
 
 // Petrol Ofisi arşivi: il ve ilçe kodları sitenin kendi kodları (District/Search).
@@ -105,12 +133,13 @@ const PUMP_SOURCE = "po"; // kaynak değişirse pompa geçmişi silinip yeniden 
 // Bu tutarın altındaki pompa farkları dağıtıcı/bayi marjı oynamasıdır, rafineri
 // değişikliği sayılmaz (baz sıfırlanmaz).
 const MIN_PUMP_CHANGE = 0.3;
-const LITRE_PER_GALLON = 3.78541;
-const DIESEL_LITRE_PER_TON = 1000 / 0.845;
 const SNAPSHOT_LONDON = 16 * 60 + 30; // Platts/ICE kapanışı (Londra saati)
-const FETCH_AFTER_LONDON = 16 * 60 + 45; // Yahoo vadeli verisi ~10 dk gecikmeli
-const GIVE_UP_LONDON = 22 * 60; // bu saate kadar veri gelmezse o gün uyarılır
-const BACKFILL_DAYS = 45; // ilk kurulumda geriye dönük doldurulan gün (Yahoo 15 dk verisi 60 gün)
+const FETCH_AFTER_LONDON = 16 * 60 + 45; // ICE gün içi verisi ~15 dk gecikmeli
+// Akdeniz benzininde ekranda işlem olmadığı için o günün değeri ancak kapanış yayınlanınca
+// gelir; motorin hazırsa bu saate kadar beklenir, sonra mesaj benzinin son değeriyle gider.
+const BENZIN_WAIT_LONDON = 20 * 60 + 30;
+const GIVE_UP_LONDON = 22 * 60; // bu saate kadar veri gelmezse o gün hata bildirilir
+const BACKFILL_DAYS = 45; // ilk kurulumda geriye dönük doldurulan gün (ICE günlük verisi ~3 ay)
 
 // --- Ayarlar --------------------------------------------------------------
 
@@ -271,43 +300,6 @@ async function getUsdRate(iso: string): Promise<number> {
   throw new Error("TCMB dolar kuru alınamadı.");
 }
 
-const MONTH_CODES = "FGHJKMNQUVXZ";
-// Bir günde kullanılacak kontrat: bir sonraki ayın vadelisi (HO/RB, vadesinden önceki
-// ayın son iş günü sona erer; ay boyunca geçerli kalır).
-function contractFor(iso: string, root: string): string {
-  const [y, m] = iso.split("-").map(Number);
-  const dm = m === 12 ? 1 : m + 1;
-  const dy = m === 12 ? y + 1 : y;
-  return `${root}${MONTH_CODES[dm - 1]}${String(dy).slice(2)}.NYM`;
-}
-
-// Yahoo 15 dakikalık verisinden her günün Londra 16:30 fiyatı (son 60 gün). Vadesi geçmiş
-// kontratlar Yahoo'da yok → null.
-async function londonSnapshots(symbol: string): Promise<Map<string, number> | null> {
-  const res = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=60d&interval=15m`,
-    { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20_000) }
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Yahoo ${symbol}: HTTP ${res.status}`);
-  const j = (await res.json()) as {
-    chart?: { result?: { timestamp?: number[]; indicators?: { quote?: { close?: (number | null)[] }[] } }[] };
-  };
-  const r = j.chart?.result?.[0];
-  const ts = r?.timestamp;
-  const close = r?.indicators?.quote?.[0]?.close;
-  if (!ts || !close) return null;
-  const out = new Map<string, number>();
-  for (let i = 0; i < ts.length; i++) {
-    const c = close[i];
-    if (c == null) continue;
-    // Çubuk zamanı başlangıçtır; 16:15 çubuğunun kapanışı 16:30 fiyatıdır.
-    const z = zoned(new Date(ts[i] * 1000), "Europe/London");
-    if (z.minutes >= 12 * 60 && z.minutes <= SNAPSHOT_LONDON - 15) out.set(z.iso, c);
-  }
-  return out;
-}
-
 // Petrol Ofisi fiyat arşivi (sitedeki "Arşiv Fiyatları" sayfasının isteği): her gün için
 // KDV dahil V/Max Kurşunsuz 95 ve V/Max Diesel — güncel fiyat sayfasıyla aynı ürünler.
 async function fetchPoArchive(from: string, to: string): Promise<{ tarih: string; benzin?: number; motorin?: number }[]> {
@@ -341,11 +333,9 @@ async function fetchPoArchive(from: string, to: string): Promise<{ tarih: string
 }
 
 // ICE: ice.com ürün sayfalarının grafik verisi. Önündeki ay kontratı listenin ilk sırasındadır;
-// günlük çubuklar kapanış (settlement) fiyatıdır — gasoil Londra 16:30, Brent 19:30.
+// günlük çubuklar kapanış (settlement) fiyatıdır — gasoil ve Akdeniz benzini Londra 16:30
+// (Platts değerlendirme saati), Brent 19:30.
 const ICE_BASE = "https://www.ice.com/marketdata/api/productguide/charting";
-type IceProduct = { productId: number; hubId: number; page: string };
-const ICE_GASOIL: IceProduct = { productId: 5817, hubId: 9373, page: "34361119/Low-Sulphur-Gasoil-Futures" };
-const ICE_BRENT: IceProduct = { productId: 254, hubId: 403, page: "219/Brent-Crude-Futures" };
 const ICE_MONTHS: Record<string, string> = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
@@ -470,83 +460,78 @@ export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
   return out.sort((a, b) => a.tarih.localeCompare(b.tarih));
 }
 
-// Yahoo ve ICE'tan Londra 16:30 fiyatlarını çekip kaydeder. İlk kurulumda son 45 günü
-// doldurur, sonra her seferinde son ~2 haftayı tazeler. Kayıtlı bir günün kontratı
-// değiştiyse (vadesi geçti) o günün değeri olduğu gibi kalır; geçmiş tahminler değişmez.
-export async function refreshMarket(now = new Date()): Promise<{ added: string[]; latest: string }> {
+// ICE'tan günlük kapanışları çekip kaydeder. İlk kurulumda (ya da bir yakıtın son 45 gününde
+// eksik varsa) son 45 günü doldurur, sonra her seferinde son ~2 haftayı tazeler. Kayıtlı bir
+// günün kontratı değiştiyse (vadesi geçti) o günün değeri olduğu gibi kalır; geçmiş tahminler
+// değişmez. Hata olursa `errors` içinde döner (o yakıt boş kalır, başka kaynağa geçilmez).
+export async function refreshMarket(
+  now = new Date()
+): Promise<{ added: string[]; latest: string; errors: string[] }> {
   const db = getDb();
   const latest = expectedLatestDate(now);
   const count = (db.prepare("SELECT COUNT(*) AS n FROM market_prices").get() as { n: number }).n;
-  // İlk kurulumda ya da ICE sonradan eklendiğinde (son 45 günde ICE'sız kayıt varsa) geriye doldur.
-  const noIce = (
+  const missing = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM market_prices WHERE tarih >= ? AND ice IS NULL")
+      .prepare("SELECT COUNT(*) AS n FROM market_prices WHERE tarih >= ? AND (ice IS NULL OR med IS NULL)")
       .get(addDays(latest, -BACKFILL_DAYS)) as { n: number }
   ).n;
-  const days = businessDays(addDays(latest, count < 5 || noIce > 3 ? -BACKFILL_DAYS : -14), latest);
+  const days = businessDays(addDays(latest, count < 5 || missing > 3 ? -BACKFILL_DAYS : -14), latest);
 
-  // Her yakıt için gereken kontratlar + yedek olarak bugünün kontratı (vadesi geçmiş
-  // kontratların Yahoo'da verisi olmadığından eski günler bununla doldurulur).
-  const snaps = new Map<string, Map<string, number> | null>();
-  for (const f of FUELS) {
-    const need = new Set([...days.map((d) => contractFor(d, f.root)), contractFor(latest, f.root)]);
-    for (const sym of need) if (!snaps.has(sym)) snaps.set(sym, await londonSnapshots(sym));
-  }
-  // Brent (yalnız bilgi): ICE önündeki ay kontratı. Yahoo'nun BZ=F serisi vadeden önce bir
-  // sonraki kontrata geçtiği için kullanılmaz. Kontrat değişince geçmiş günler yeni kontratla
-  // yeniden yazılmasın diye yalnız son 3 iş günü güncellenir (16:30 fiyatı → kesin kapanış).
-  const brent = await iceDaily(ICE_BRENT, latest, now).catch((e) => {
-    console.error("[zam-tahmini] ICE Brent alınamadı:", e instanceof Error ? e.message : e);
-    return null;
-  });
-  // Kaynak Yahoo'dan ICE'a geçtiğinde bir kez bütün pencere düzeltilir.
+  const errors: string[] = [];
+  const fetchIce = async (label: string, product: IceProduct) => {
+    try {
+      return await iceDaily(product, latest, now);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[zam-tahmini] ${label} alınamadı:`, msg);
+      errors.push(`${label}: ${msg}`);
+      return null;
+    }
+  };
+  const fuelData: ({ kontrat: string; prices: Map<string, number> } | null)[] = [];
+  for (const f of FUELS) fuelData.push(await fetchIce(f.source, f.product));
+  // Brent yalnız bilgi; kontrat değişince geçmiş günler yeniden yazılmasın diye yalnız son 3 iş
+  // günü güncellenir (16:30 fiyatı → kesin kapanış). Yahoo'dan ICE'a geçişte bir kez düzeltilir.
+  const brent = await fetchIce("Brent (ICE)", ICE_BRENT);
   const brentFix = brent != null && getSetting("ff_brent_source") !== "ice";
   const brentDays = new Set(brentFix ? days : days.slice(-3));
-  const ice = await iceDaily(ICE_GASOIL, latest, now).catch((e) => {
-    console.error("[zam-tahmini] ICE verisi alınamadı, motorinde ABD verisi kullanılacak:", e instanceof Error ? e.message : e);
-    return null;
-  });
 
   const existing = new Map((db.prepare("SELECT * FROM market_prices").all() as PriceRow[]).map((r) => [r.tarih, r]));
   const upsert = db.prepare(
-    `INSERT OR REPLACE INTO market_prices (tarih, ho, ho_kontrat, rb, rb_kontrat, brent, ice, ice_kontrat, usd, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR REPLACE INTO market_prices
+       (tarih, ho, ho_kontrat, rb, rb_kontrat, brent, ice, ice_kontrat, med, med_kontrat, usd, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const added: string[] = [];
   for (const d of days) {
     const prev = existing.get(d);
-    const yahoo = FUELS.map((f) => {
-      const keep = prev && prev[f.col] != null ? { v: prev[f.col] as number, k: prev[f.kcol] as string } : null;
-      const natural = contractFor(d, f.root);
-      const v = snaps.get(natural)?.get(d);
-      if (v != null) return { v, k: natural };
-      if (keep) return keep;
-      const fallback = contractFor(latest, f.root);
-      const w = snaps.get(fallback)?.get(d);
-      return w != null ? { v: w, k: fallback } : null;
+    const vals = FUELS.map((f, i) => {
+      const keep = prev && prev[f.col] != null ? { v: prev[f.col] as number, k: prev[f.kcol] as string | null } : null;
+      const got = fuelData[i];
+      const v = got?.prices.get(d);
+      return v != null && (!keep || keep.k === got!.kontrat) ? { v, k: got!.kontrat } : keep;
     });
-    const iv = ice?.prices.get(d);
-    const keepIce = prev?.ice != null ? { v: prev.ice, k: prev.ice_kontrat } : null;
-    const iceVal =
-      iv != null && (!keepIce || keepIce.k === ice!.kontrat) ? { v: iv, k: ice!.kontrat } : keepIce;
-    if (yahoo.every((x) => x == null) && !iceVal) continue; // tatil ya da veri yok
+    const b = (prev?.brent == null || brentDays.has(d) ? brent?.prices.get(d) : undefined) ?? prev?.brent ?? null;
+    if (vals.every((x) => x == null) && b == null) continue; // tatil ya da veri yok
     const usd = prev?.usd ?? (await getUsdRate(d));
     upsert.run(
       d,
-      yahoo[0]?.v ?? null,
-      yahoo[0]?.k ?? null,
-      yahoo[1]?.v ?? null,
-      yahoo[1]?.k ?? null,
-      (prev?.brent == null || brentDays.has(d) ? brent?.prices.get(d) : undefined) ?? prev?.brent ?? null,
-      iceVal?.v ?? null,
-      iceVal?.k ?? null,
+      prev?.ho ?? null,
+      prev?.ho_kontrat ?? null,
+      prev?.rb ?? null,
+      prev?.rb_kontrat ?? null,
+      b,
+      vals[0]?.v ?? null,
+      vals[0]?.k ?? null,
+      vals[1]?.v ?? null,
+      vals[1]?.k ?? null,
       usd,
       Date.now()
     );
     if (!prev) added.push(d);
   }
   if (brentFix) setSetting("ff_brent_source", "ice");
-  return { added, latest };
+  return { added, latest, errors };
 }
 
 // --- Hesap ---------------------------------------------------------------------
@@ -569,19 +554,16 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
   const n = Math.max(1, Math.round(cfg.ortalamaGun));
   const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
 
-  // Zincirlenmiş seri: kontrat (ya da kaynak) değişince aradaki fark sayılmaz. Motorinde
-  // ICE varsa o, yoksa ABD motorini; litre başına maliyet birimine göre hesaplanır.
-  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; perUnit: number; idx: number; c: number; avg: number };
+  // Zincirlenmiş seri: kontrat değişince aradaki fark sayılmaz.
+  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number };
   const pts: Pt[] = [];
   for (const q of prices) {
-    const useIce = fuel === "motorin" && q.ice != null && q.ice_kontrat;
-    const raw = useIce ? q.ice : q[meta.col];
-    const kontrat = useIce ? q.ice_kontrat : q[meta.kcol];
+    const raw = q[meta.col];
+    const kontrat = q[meta.kcol];
     if (raw == null || !kontrat) continue;
-    const perUnit = useIce ? 1 / DIESEL_LITRE_PER_TON : 1 / LITRE_PER_GALLON; // birim → litre
     const prev = pts[pts.length - 1];
     const idx = !prev ? raw : prev.kontrat === kontrat ? (prev.idx * raw) / prev.raw : prev.idx;
-    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, perUnit, idx, c: idx * q.usd, avg: 0 });
+    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0 });
   }
   pts.forEach((p, i) => {
     const win = pts.slice(Math.max(0, i - n + 1), i + 1);
@@ -603,7 +585,7 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
       calibrating = true;
     }
     const pct = (p.avg / base - 1) * 100;
-    const perLitre = p.raw * p.usd * p.perUnit; // TL/litre ürün maliyeti
+    const perLitre = (p.raw * p.usd) / meta.litrePerTon; // TL/litre ürün maliyeti
     const tl = (pct / 100) * perLitre * 1.2 * kats * (1 - cfg.eselPay / 100);
     return {
       tarih: p.tarih,
@@ -686,12 +668,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
   const row = listPrices().find((p) => p.tarih === tarih);
   if (row) {
     const parts = [
-      // ICE yoksa motorin ABD verisinden hesaplandığı için onu gösterir.
-      row.ice != null
-        ? `Avrupa motorin (ICE) ${fmtNum(row.ice, 2)} $/t`
-        : row.ho != null
-          ? `ABD motorin ${fmtNum(row.ho, 3)} $/gal`
-          : null,
+      ...FUELS.map((f) => (row[f.col] != null ? `${f.source} ${fmtNum(row[f.col] as number, 2)} $/t` : null)),
       row.brent != null ? `Brent ${fmtNum(row.brent, 1)} $` : null,
     ].filter(Boolean);
     lines.push(`Kur ${fmtNum(row.usd, 4)} · ${parts.join(" · ")}`);
@@ -775,24 +752,40 @@ async function tick(): Promise<void> {
   if (!cfg.enabled) return;
   const now = new Date();
 
-  // 1) Piyasa: hafta içi Londra 16:45'ten sonra, o günün kapanışı alınana kadar.
+  // 1) Piyasa: hafta içi Londra 16:45'ten sonra, o günün kapanışları alınana kadar. Motorin
+  // hazır ama benzin henüz yoksa 20:30'a kadar beklenir; 22:00'ye kadar hiçbiri gelmezse hata
+  // bildirilir (yedek kaynak yok).
   const lon = zoned(now, "Europe/London");
   if (!isWeekend(lon.iso) && lon.minutes >= FETCH_AFTER_LONDON && getSetting("ff_market_day") !== lon.iso) {
+    let errors: string[] = [];
     try {
-      await refreshMarket(now);
+      errors = (await refreshMarket(now)).errors;
     } catch (e) {
-      console.error("[zam-tahmini] piyasa verisi alınamadı:", e instanceof Error ? e.message : e);
+      errors = [e instanceof Error ? e.message : String(e)];
+      console.error("[zam-tahmini] piyasa verisi alınamadı:", errors[0]);
     }
-    const got = getDb().prepare("SELECT 1 FROM market_prices WHERE tarih = ?").get(lon.iso);
-    if (got) {
+    const row = getDb().prepare("SELECT ice, med FROM market_prices WHERE tarih = ?").get(lon.iso) as
+      | { ice: number | null; med: number | null }
+      | undefined;
+    const have = FUELS.filter((f) => row?.[f.col] != null);
+    const done = have.length === FUELS.length || (have.length > 0 && lon.minutes >= BENZIN_WAIT_LONDON);
+    if (done) {
       setSetting("ff_market_day", lon.iso);
       await broadcastDay(lon.iso);
-    } else if (lon.minutes >= GIVE_UP_LONDON) {
+    }
+    // Hata bildirimi: gerçek bir çekim hatası varken eksik yakıt kaldıysa, ya da 22:00'ye kadar
+    // hiç veri gelmediyse. (Benzin kapanışı geç yayınlanırsa uyarı atılmaz; mesajda benzinin
+    // son değeri tarihiyle görünür, ertesi günkü tazelemede tamamlanır.)
+    const eksik = FUELS.filter((f) => row?.[f.col] == null).map((f) => f.source);
+    if ((done && eksik.length > 0 && errors.length > 0) || (!done && lon.minutes >= GIVE_UP_LONDON)) {
       setSetting("ff_market_day", lon.iso);
       if (isTelegramConfigured())
         await sendToChats(
           subscriberIds(),
-          `⚠️ ${fmtDay(lon.iso)} için piyasa verisi alınamadı (ABD piyasası tatil olabilir); bugün tahmin gönderilemedi.`
+          `⚠️ <b>Zam tahmini: ICE verisi alınamadı</b> (${fmtDay(lon.iso)})\n` +
+            `Eksik: ${eksik.join(", ")}.` +
+            (errors.length ? `\nHata: ${errors.join(" · ")}` : "\nICE o gün kapanış yayınlamamış olabilir (tatil).") +
+            (have.length ? "\nEksik yakıt için son bilinen değer kullanıldı." : "\nBugün tahmin gönderilemedi.")
         );
     }
   }

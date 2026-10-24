@@ -138,9 +138,9 @@ function initDb(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
 
-    -- Zam/İndirim Tahmini (src/lib/fuel-forecast.ts). market_prices: her iş günü Londra
-    -- 16:30'daki ABD motorin (HO) / benzin (RB) vadelisi ($/galon, Yahoo) ve TCMB kuru;
-    -- kontrat değişince seri zincirlenir. pump_prices: Petrol Ofisi Serdivan arşivinden
+    -- Zam/İndirim Tahmini (src/lib/fuel-forecast.ts). market_prices: her iş günü ICE
+    -- kapanışları (ice = Avrupa motorini, med = Akdeniz benzini; sütunlar sonradan eklenir) ve
+    -- TCMB kuru; ho/rb eski Yahoo verisidir. Kontrat değişince seri zincirlenir. pump_prices: Petrol Ofisi Serdivan arşivinden
     -- günlük pompa fiyatları (gerçekleşen zam/indirimler buradan çıkarılır).
     CREATE TABLE IF NOT EXISTS market_prices (
       tarih TEXT PRIMARY KEY,     -- YYYY-MM-DD (Londra işlem günü)
@@ -358,12 +358,15 @@ export default getDb;
 // patron dahil herkes bir anda kilitlenmesin; tanınmayanlar Ayarlar'dan kapatılır.
 // Telegram botu (telegram-bot.mjs) aynı DB'yi Next'ten önce açabildiği için aynı
 // geçişi kendisi de yapar; ikisi yarışırsa "duplicate column" hatası yutulur.
-// Zam Tahmini: motorinde Avrupa motorini (ICE Low Sulphur Gasoil, $/ton) sonradan eklendi.
+// Zam Tahmini: ICE kaynakları sonradan eklendi — motorin (ICE Low Sulphur Gasoil) ve benzin
+// (ICE Premium Unleaded 10ppm FOB Med), $/ton.
 function ensureMarketIceColumns(db: Database.Database): void {
   const cols = db.prepare("PRAGMA table_info(market_prices)").all() as { name: string }[];
   for (const [name, type] of [
     ["ice", "REAL"],
     ["ice_kontrat", "TEXT"],
+    ["med", "REAL"],
+    ["med_kontrat", "TEXT"],
   ]) {
     if (cols.some((c) => c.name === name)) continue;
     try {

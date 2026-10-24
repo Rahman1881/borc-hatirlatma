@@ -32,13 +32,11 @@ type Config = {
 };
 type PriceRow = {
   tarih: string;
-  ho: number | null;
-  ho_kontrat: string | null;
-  rb: number | null;
-  rb_kontrat: string | null;
   brent: number | null;
   ice: number | null;
   ice_kontrat: string | null;
+  med: number | null;
+  med_kontrat: string | null;
   usd: number;
   motorin: FuelRow | null;
   benzin: FuelRow | null;
@@ -52,18 +50,18 @@ type Data = {
   rows: PriceRow[];
   changes: (PumpChange & { estimate: FuelRow | null })[];
   statusText: string;
+  errors?: string[];
   error?: string;
 };
 
 const FUELS: { key: Fuel; label: string; source: string }[] = [
-  { key: "motorin", label: "Motorin", source: "ABD motorin (Heating Oil)" },
-  { key: "benzin", label: "Benzin", source: "ABD benzin (RBOB)" },
+  { key: "motorin", label: "Motorin", source: "Avrupa motorin" },
+  { key: "benzin", label: "Benzin", source: "Akdeniz benzin" },
 ];
 
-// Kartta hangi kaynağın kullanıldığı: motorinde ICE varsa "Avrupa motorin (ICE) … $/ton".
+// Kartta kaynak ve kontrat: "Avrupa motorin (ICE Nov26) 1.492,00 $/ton".
 function sourceText(f: (typeof FUELS)[number], r: FuelRow): string {
-  if (r.kontrat.startsWith("ICE ")) return `Avrupa motorin (ICE ${r.kontrat.slice(4)}) ${num(r.raw, 2)} $/ton`;
-  return `${f.source} ${num(r.raw, 3)} $/gal (${kontratAd(r.kontrat)})`;
+  return `${f.source} (${r.kontrat}) ${num(r.raw, 2)} $/ton`;
 }
 
 const LEVEL: Record<Level, { text: string; tone: "negative" | "warning" | "neutral" | "positive" | "primary" }> = {
@@ -99,7 +97,7 @@ function pctTone(r: FuelRow | null): string {
   return "text-muted-foreground";
 }
 function kontratAd(k: string | null): string {
-  return k ? k.replace(".NYM", "") : "—";
+  return k ? k.replace("ICE ", "") : "";
 }
 
 // Sapma göstergesi: ortada 0, iki yanda eşik; bar ortadan sapmaya doğru dolar.
@@ -207,7 +205,7 @@ export default function ZamTahminiPage() {
             <p className="mt-0.5 text-sm text-muted-foreground">
               Pompa fiyatı, Avrupa ürün fiyatı × dolar kuruyla oluşur; son pompa değişikliğinden beri bu maliyet
               eşiği aşınca zam ya da indirim gelir. Sistem her iş günü Avrupa kapanışında (saat ~{data.fetchTime})
-              Avrupa motorin (ICE) ve ABD benzin vadelilerini ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
+              ICE&apos;tan Avrupa motorin ve Akdeniz benzin fiyatlarını ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
               rapor alanlara bildirir. Tahmindir; resmi formül yayınlanmaz.
             </p>
           </div>
@@ -279,16 +277,24 @@ export default function ZamTahminiPage() {
           <div>
             <p className="text-sm font-semibold">Veri</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Motorin: ICE Low Sulphur Gasoil (Avrupa motorini, Platts Akdeniz&apos;in bağlı olduğu kontrat),
-              önündeki ay kontratının Londra 16:30 kapanışı; ICE verisi gelmediği gün ABD motorini (Yahoo).
-              Benzin: Yahoo Finance — ABD benzin (RBOB) vadelisi, Londra 16:30 fiyatı. Kur: TCMB. Gerçekleşen
+              Hepsi ICE&apos;tan, önündeki ay kontratının günlük kapanışı: motorin ICE Low Sulphur Gasoil (Avrupa
+              motorini), benzin ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini), Brent ICE Brent.
+              Veri gelmezse yedek kaynak yok; o gün Telegram&apos;dan hata bildirilir. Kur: TCMB. Gerçekleşen
               değişiklikler: Petrol Ofisi Serdivan fiyat arşivi.
               {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
             </p>
           </div>
           <button
             onClick={() =>
-              post({ action: "refresh" }).then((d) => d && setMsg({ ok: true, text: "Veriler güncellendi." }))
+              post({ action: "refresh" }).then(
+                (d) =>
+                  d &&
+                  setMsg(
+                    d.errors?.length
+                      ? { ok: false, text: `Bazı veriler alınamadı: ${d.errors.join(" · ")}` }
+                      : { ok: true, text: "Veriler güncellendi." }
+                  )
+              )
             }
             disabled={busy}
             className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -387,7 +393,8 @@ export default function ZamTahminiPage() {
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">Gün</th>
-                  <th className="py-2 pr-3 font-medium">Avrupa motorin (ICE) $/t</th>
+                  <th className="py-2 pr-3 font-medium">Avrupa motorin $/t</th>
+                  <th className="py-2 pr-3 font-medium">Akdeniz benzin $/t</th>
                   <th className="py-2 pr-3 font-medium">Brent $</th>
                   <th className="py-2 pr-3 font-medium">Kur</th>
                   <th className="py-2 pr-3 font-medium">Motorin sapma</th>
@@ -400,7 +407,11 @@ export default function ZamTahminiPage() {
                     <td className="py-2 pr-3">{fmtDay(q.tarih)}</td>
                     <td className="py-2 pr-3">
                       {q.ice != null ? num(q.ice, 2) : "—"}{" "}
-                      <span className="text-xs text-muted-foreground">{q.ice_kontrat?.replace("ICE ", "") ?? ""}</span>
+                      <span className="text-xs text-muted-foreground">{kontratAd(q.ice_kontrat)}</span>
+                    </td>
+                    <td className="py-2 pr-3">
+                      {q.med != null ? num(q.med, 2) : "—"}{" "}
+                      <span className="text-xs text-muted-foreground">{kontratAd(q.med_kontrat)}</span>
                     </td>
                     <td className="py-2 pr-3">{q.brent != null ? num(q.brent, 1) : "—"}</td>
                     <td className="py-2 pr-3">{num(q.usd, 4)}</td>

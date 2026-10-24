@@ -15,7 +15,7 @@ import {
 
 // Portal → Zam/İndirim Tahmini sayfası.
 //  GET  → durum, piyasa verisi, gerçekleşen değişiklikler, ayarlar
-//  POST { action: "refresh" } → Yahoo + Petrol Ofisi'nden şimdi çek
+//  POST { action: "refresh" } → ICE + Petrol Ofisi'nden şimdi çek (hatalar `errors`)
 //       { action: "config", ...ayarlar } | { action: "ignore", tarih, yakit, ignored }
 
 function snapshot() {
@@ -61,8 +61,8 @@ export async function POST(req: NextRequest) {
       // İlk kurulumda geçmişi doldurur; sonra son günleri tazeler. Telegram'a göndermez.
       await bootstrapForecast();
       await refreshPumpPrices(30);
-      await refreshMarket();
-      return NextResponse.json(snapshot());
+      const { errors } = await refreshMarket();
+      return NextResponse.json({ ...snapshot(), errors });
     }
     if (body.action === "config") {
       saveForecastConfig(body);
