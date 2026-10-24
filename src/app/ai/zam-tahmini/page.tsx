@@ -37,6 +37,8 @@ type PriceRow = {
   rb: number | null;
   rb_kontrat: string | null;
   brent: number | null;
+  ice: number | null;
+  ice_kontrat: string | null;
   usd: number;
   motorin: FuelRow | null;
   benzin: FuelRow | null;
@@ -57,6 +59,12 @@ const FUELS: { key: Fuel; label: string; source: string }[] = [
   { key: "motorin", label: "Motorin", source: "ABD motorin (Heating Oil)" },
   { key: "benzin", label: "Benzin", source: "ABD benzin (RBOB)" },
 ];
+
+// Kartta hangi kaynağın kullanıldığı: motorinde ICE varsa "Avrupa motorin (ICE) … $/ton".
+function sourceText(f: (typeof FUELS)[number], r: FuelRow): string {
+  if (r.kontrat.startsWith("ICE ")) return `Avrupa motorin (ICE ${r.kontrat.slice(4)}) ${num(r.raw, 2)} $/ton`;
+  return `${f.source} ${num(r.raw, 3)} $/gal (${kontratAd(r.kontrat)})`;
+}
 
 const LEVEL: Record<Level, { text: string; tone: "negative" | "warning" | "neutral" | "positive" | "primary" }> = {
   zam: { text: "Zam bekleniyor", tone: "negative" },
@@ -199,7 +207,7 @@ export default function ZamTahminiPage() {
             <p className="mt-0.5 text-sm text-muted-foreground">
               Pompa fiyatı, Avrupa ürün fiyatı × dolar kuruyla oluşur; son pompa değişikliğinden beri bu maliyet
               eşiği aşınca zam ya da indirim gelir. Sistem her iş günü Avrupa kapanışında (saat ~{data.fetchTime})
-              ABD motorin/benzin vadelilerini ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
+              Avrupa motorin (ICE) ve ABD benzin vadelilerini ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
               rapor alanlara bildirir. Tahmindir; resmi formül yayınlanmaz.
             </p>
           </div>
@@ -227,7 +235,7 @@ export default function ZamTahminiPage() {
                   <p className="text-sm font-semibold">{f.label}</p>
                   <p className="text-xs text-muted-foreground">
                     {r
-                      ? `${fmtDay(r.tarih)} · ${f.source} ${num(r.raw, 3)} $/gal (${kontratAd(r.kontrat)}) · kur ${num(r.usd, 4)}`
+                      ? `${fmtDay(r.tarih)} · ${sourceText(f, r)} · kur ${num(r.usd, 4)}`
                       : "Henüz veri yok"}
                   </p>
                 </div>
@@ -271,9 +279,10 @@ export default function ZamTahminiPage() {
           <div>
             <p className="text-sm font-semibold">Veri</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Piyasa: Yahoo Finance — ABD motorin (Heating Oil) ve benzin (RBOB) vadelileri, her gün Londra 16:30
-              fiyatı (Platts/ICE kapanışıyla aynı an). Kur: TCMB. Gerçekleşen değişiklikler: Petrol Ofisi
-              Serdivan fiyat arşivi.
+              Motorin: ICE Low Sulphur Gasoil (Avrupa motorini, Platts Akdeniz&apos;in bağlı olduğu kontrat),
+              önündeki ay kontratının Londra 16:30 kapanışı; ICE verisi gelmediği gün ABD motorini (Yahoo).
+              Benzin: Yahoo Finance — ABD benzin (RBOB) vadelisi, Londra 16:30 fiyatı. Kur: TCMB. Gerçekleşen
+              değişiklikler: Petrol Ofisi Serdivan fiyat arşivi.
               {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
             </p>
           </div>
@@ -378,6 +387,7 @@ export default function ZamTahminiPage() {
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">Gün</th>
+                  <th className="py-2 pr-3 font-medium">Avrupa motorin (ICE) $/t</th>
                   <th className="py-2 pr-3 font-medium">ABD motorin $/gal</th>
                   <th className="py-2 pr-3 font-medium">ABD benzin $/gal</th>
                   <th className="py-2 pr-3 font-medium">Brent $</th>
@@ -390,6 +400,10 @@ export default function ZamTahminiPage() {
                 {data.rows.map((q) => (
                   <tr key={q.tarih} className="border-b last:border-0">
                     <td className="py-2 pr-3">{fmtDay(q.tarih)}</td>
+                    <td className="py-2 pr-3">
+                      {q.ice != null ? num(q.ice, 2) : "—"}{" "}
+                      <span className="text-xs text-muted-foreground">{q.ice_kontrat?.replace("ICE ", "") ?? ""}</span>
+                    </td>
                     <td className="py-2 pr-3">
                       {q.ho != null ? num(q.ho, 3) : "—"}{" "}
                       <span className="text-xs text-muted-foreground">{kontratAd(q.ho_kontrat)}</span>

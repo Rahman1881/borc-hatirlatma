@@ -316,6 +316,7 @@ function initDb(db: Database.Database) {
   }
 
   ensureTelegramAccessColumn(db);
+  ensureMarketIceColumns(db);
 
   // Default template
   const templateCount = db.prepare("SELECT COUNT(*) as count FROM templates").get() as { count: number };
@@ -357,6 +358,22 @@ export default getDb;
 // patron dahil herkes bir anda kilitlenmesin; tanınmayanlar Ayarlar'dan kapatılır.
 // Telegram botu (telegram-bot.mjs) aynı DB'yi Next'ten önce açabildiği için aynı
 // geçişi kendisi de yapar; ikisi yarışırsa "duplicate column" hatası yutulur.
+// Zam Tahmini: motorinde Avrupa motorini (ICE Low Sulphur Gasoil, $/ton) sonradan eklendi.
+function ensureMarketIceColumns(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(market_prices)").all() as { name: string }[];
+  for (const [name, type] of [
+    ["ice", "REAL"],
+    ["ice_kontrat", "TEXT"],
+  ]) {
+    if (cols.some((c) => c.name === name)) continue;
+    try {
+      db.exec(`ALTER TABLE market_prices ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!(err instanceof Error && /duplicate column/i.test(err.message))) throw err;
+    }
+  }
+}
+
 export function ensureTelegramAccessColumn(db: Database.Database): void {
   const cols = db.prepare("PRAGMA table_info(telegram_chats)").all() as { name: string }[];
   if (cols.some((c) => c.name === "allowed")) return;
