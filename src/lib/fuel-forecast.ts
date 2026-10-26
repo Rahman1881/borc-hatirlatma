@@ -27,7 +27,9 @@ export type Level = "zam" | "zam_yakin" | "notr" | "indirim_yakin" | "indirim";
 export type ForecastConfig = {
   enabled: boolean;
   esikPct: number; // rafinerinin fiyat değiştirdiği sapma (%)
-  ortalamaGun: number; // kaç kapanışın ortalaması alınır
+  // Güncel maliyet: son kaç kapanışın ortalaması (yakıta göre).
+  ortalamaMotorin: number;
+  ortalamaBenzin: number;
   // Pompaya yansıyan / hesaplanan TL oranı. Geçmiş testten: motorin ~1,3, benzin ~0,95.
   katsayiMotorin: number;
   katsayiBenzin: number;
@@ -36,12 +38,14 @@ export type ForecastConfig = {
   yoksay: string[]; // baz sayılmayacak pompa değişiklikleri: "YYYY-MM-DD|yakit"
 };
 
-// Geçmiş test (2023-03 → 2026-10): 3 kapanış ortalaması, %3 eşik → motorinde alarmların
-// ~%67'si 5 iş günü içinde aynı yönde değişiklikle sonuçlandı, ortalama ~2,8 iş günü önce.
+// Geçmiş test (ICE, 2024-11 → 2026-10, Petrol Ofisi değişiklikleri; baz = değişiklikten iki iş
+// günü önceki kapanış): %3 eşikte motorin 2 kapanış ortalamasıyla alarmların ~%74'ü 5 iş günü
+// içinde aynı yönde değişiklikle sonuçlandı, benzin 3 kapanışla ~%72.
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   enabled: true,
   esikPct: 3,
-  ortalamaGun: 3,
+  ortalamaMotorin: 2,
+  ortalamaBenzin: 3,
   katsayiMotorin: 1.3,
   katsayiBenzin: 0.95,
   eselPay: 0,
@@ -153,12 +157,19 @@ function setSetting(key: string, value: string): void {
   getDb().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
-const CONFIG_KEY = "fuel_forecast_v2";
+const CONFIG_KEY = "fuel_forecast_v3";
+const OLD_CONFIG_KEY = "fuel_forecast_v2"; // tek "ortalamaGun" vardı; ortalamalar yeni varsayılana geçer
 
 export function getForecastConfig(): ForecastConfig {
   try {
     const raw = getSetting(CONFIG_KEY);
     if (raw) return { ...DEFAULT_FORECAST_CONFIG, ...(JSON.parse(raw) as Partial<ForecastConfig>) };
+    const old = getSetting(OLD_CONFIG_KEY);
+    if (old) {
+      const o = JSON.parse(old) as Partial<ForecastConfig> & { ortalamaGun?: number };
+      delete o.ortalamaGun;
+      return { ...DEFAULT_FORECAST_CONFIG, ...o };
+    }
   } catch {
     // bozuksa varsayılan
   }
@@ -174,7 +185,8 @@ export function saveForecastConfig(patch: Partial<ForecastConfig>): ForecastConf
   const next: ForecastConfig = {
     enabled: typeof patch.enabled === "boolean" ? patch.enabled : cur.enabled,
     esikPct: num(patch.esikPct, 0.5, 20, cur.esikPct),
-    ortalamaGun: Math.round(num(patch.ortalamaGun, 1, 20, cur.ortalamaGun)),
+    ortalamaMotorin: Math.round(num(patch.ortalamaMotorin, 1, 20, cur.ortalamaMotorin)),
+    ortalamaBenzin: Math.round(num(patch.ortalamaBenzin, 1, 20, cur.ortalamaBenzin)),
     katsayiMotorin: num(patch.katsayiMotorin, 0.1, 5, cur.katsayiMotorin),
     katsayiBenzin: num(patch.katsayiBenzin, 0.1, 5, cur.katsayiBenzin),
     eselPay: num(patch.eselPay, 0, 100, cur.eselPay),
@@ -551,7 +563,7 @@ function findLastIndex<T>(arr: T[], fn: (x: T) => boolean): number {
 
 function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg: ForecastConfig): FuelCalc {
   const meta = FUELS.find((f) => f.key === fuel)!;
-  const n = Math.max(1, Math.round(cfg.ortalamaGun));
+  const n = Math.max(1, Math.round(fuel === "motorin" ? cfg.ortalamaMotorin : cfg.ortalamaBenzin));
   const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
 
   // Zincirlenmiş seri: kontrat değişince aradaki fark sayılmaz.
@@ -573,12 +585,15 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
   const changes = allChanges.filter((c) => c.yakit === fuel && !c.ignored);
   const rows: FuelRow[] = pts.map((p) => {
     const ch = changes.filter((c) => c.tarih <= p.tarih).pop() ?? null;
-    // Baz: değişiklik gününden önceki son kapanıştaki ortalama.
+    // Baz: değişiklikten iki iş günü önceki kapanış. Rafineri kararı bir önceki gün 16:00'da
+    // verir; o an bildiği son Avrupa kapanışı budur. (Ortalama alınca hızlı hareketlerde baz
+    // gecikip sapmayı olduğundan büyük gösteriyordu.)
     let j = ch ? findLastIndex(pts, (x) => x.tarih < ch.tarih) : -1;
     let base: number;
     let calibrating = false;
     if (j >= 0) {
-      base = pts[j].avg;
+      if (j >= 1) j -= 1;
+      base = pts[j].c;
     } else {
       j = ch ? pts.findIndex((x) => x.tarih >= ch.tarih) : 0;
       base = pts[j].c;

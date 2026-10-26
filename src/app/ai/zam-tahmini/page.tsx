@@ -23,7 +23,8 @@ type FuelRow = {
 type Config = {
   enabled: boolean;
   esikPct: number;
-  ortalamaGun: number;
+  ortalamaMotorin: number;
+  ortalamaBenzin: number;
   katsayiMotorin: number;
   katsayiBenzin: number;
   eselPay: number;
@@ -436,11 +437,12 @@ export default function ZamTahminiPage() {
         </button>
         {showCfg && (
           <div className="mt-4 space-y-4">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
               {(
                 [
                   ["esikPct", "Eşik (%)", "0.1"],
-                  ["ortalamaGun", "Ortalama (kapanış)", "1"],
+                  ["ortalamaMotorin", "Motorin ortalama (kapanış)", "1"],
+                  ["ortalamaBenzin", "Benzin ortalama (kapanış)", "1"],
                   ["katsayiMotorin", "Motorin katsayı", "0.05"],
                   ["katsayiBenzin", "Benzin katsayı", "0.05"],
                   ["eselPay", "Eşel mobil payı (%)", "1"],
@@ -467,8 +469,10 @@ export default function ZamTahminiPage() {
               Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
             </label>
             <p className="text-xs text-muted-foreground">
-              Varsayılanlar 2023–2026 geçmiş testinden: 3 kapanış ortalaması ve %3 eşikle motorin alarmlarının
-              ~3&apos;te 2&apos;si 5 iş günü içinde aynı yönde değişiklikle sonuçlandı (ortalama ~3 iş günü önce).
+              Sapma, son pompa değişikliğinden iki iş günü önceki Avrupa kapanışına (rafinerinin karar anında
+              bildiği son fiyat) göre hesaplanır. Varsayılanlar 2024–2026 geçmiş testinden: %3 eşikle motorin 2,
+              benzin 3 kapanış ortalamasıyla alarmların ~%72–74&apos;ü 5 iş günü içinde aynı yönde değişiklikle
+              sonuçlandı.
               Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır (motorin ~1,3, benzin ~0,95). Eşel mobil
               uygulanırsa, zammın devletin ÖTV&apos;den karşıladığı payı girin.
             </p>
