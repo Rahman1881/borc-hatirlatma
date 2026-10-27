@@ -38,14 +38,13 @@ export type ForecastConfig = {
   yoksay: string[]; // baz sayılmayacak pompa değişiklikleri: "YYYY-MM-DD|yakit"
 };
 
-// Geçmiş test (ICE, 2024-11 → 2026-10, Petrol Ofisi değişiklikleri; baz = değişiklikten iki iş
-// günü önceki kapanış): %3 eşikte motorin 2 kapanış ortalamasıyla alarmların ~%74'ü 5 iş günü
-// içinde aynı yönde değişiklikle sonuçlandı, benzin 3 kapanışla ~%72.
+// Resmi hesap (sektör bilirkişisi): son 5 kapanışın ortalaması. Baz = değişiklikten bir gün
+// önceki kapanış; bu ikili 27 Ekim'deki resmi "değer" mesajını benzinde birebir tutturdu (+2,60).
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   enabled: true,
   esikPct: 3,
-  ortalamaMotorin: 2,
-  ortalamaBenzin: 3,
+  ortalamaMotorin: 5,
+  ortalamaBenzin: 5,
   katsayiMotorin: 1.3,
   katsayiBenzin: 0.95,
   eselPay: 0,
@@ -157,17 +156,22 @@ function setSetting(key: string, value: string): void {
   getDb().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
-const CONFIG_KEY = "fuel_forecast_v3";
-const OLD_CONFIG_KEY = "fuel_forecast_v2"; // tek "ortalamaGun" vardı; ortalamalar yeni varsayılana geçer
+const CONFIG_KEY = "fuel_forecast_v4";
+// Eski kayıtlar (v3: motorin 2 / benzin 3, v2: tek "ortalamaGun") aktarılır; ortalamalar resmi
+// hesaptaki 5 güne geçer.
+const OLD_CONFIG_KEYS = ["fuel_forecast_v3", "fuel_forecast_v2"];
 
 export function getForecastConfig(): ForecastConfig {
   try {
     const raw = getSetting(CONFIG_KEY);
     if (raw) return { ...DEFAULT_FORECAST_CONFIG, ...(JSON.parse(raw) as Partial<ForecastConfig>) };
-    const old = getSetting(OLD_CONFIG_KEY);
-    if (old) {
+    for (const key of OLD_CONFIG_KEYS) {
+      const old = getSetting(key);
+      if (!old) continue;
       const o = JSON.parse(old) as Partial<ForecastConfig> & { ortalamaGun?: number };
       delete o.ortalamaGun;
+      delete o.ortalamaMotorin;
+      delete o.ortalamaBenzin;
       return { ...DEFAULT_FORECAST_CONFIG, ...o };
     }
   } catch {
@@ -585,14 +589,13 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
   const changes = allChanges.filter((c) => c.yakit === fuel && !c.ignored);
   const rows: FuelRow[] = pts.map((p) => {
     const ch = changes.filter((c) => c.tarih <= p.tarih).pop() ?? null;
-    // Baz: değişiklikten iki iş günü önceki kapanış. Rafineri kararı bir önceki gün 16:00'da
-    // verir; o an bildiği son Avrupa kapanışı budur. (Ortalama alınca hızlı hareketlerde baz
-    // gecikip sapmayı olduğundan büyük gösteriyordu.)
+    // Baz: değişiklikten bir gün önceki kapanış (değişiklik gününden önceki son kapanış).
+    // Rafineri yeni fiyatı en son fiyat seviyesine göre belirler; ortalama alınca hızlı
+    // hareketlerde baz geride kalıyordu (10 Ekim'de +6,40 TL'lik zam bunu gösterdi).
     let j = ch ? findLastIndex(pts, (x) => x.tarih < ch.tarih) : -1;
     let base: number;
     let calibrating = false;
     if (j >= 0) {
-      if (j >= 1) j -= 1;
       base = pts[j].c;
     } else {
       j = ch ? pts.findIndex((x) => x.tarih >= ch.tarih) : 0;

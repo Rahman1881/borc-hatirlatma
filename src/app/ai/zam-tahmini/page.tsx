@@ -469,10 +469,9 @@ export default function ZamTahminiPage() {
               Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
             </label>
             <p className="text-xs text-muted-foreground">
-              Sapma, son pompa değişikliğinden iki iş günü önceki Avrupa kapanışına (rafinerinin karar anında
-              bildiği son fiyat) göre hesaplanır. Varsayılanlar 2024–2026 geçmiş testinden: %3 eşikle motorin 2,
-              benzin 3 kapanış ortalamasıyla alarmların ~%72–74&apos;ü 5 iş günü içinde aynı yönde değişiklikle
-              sonuçlandı.
+              Resmi hesaptaki gibi bugünkü değer son 5 kapanışın ortalamasıdır; sapma, son pompa
+              değişikliğinden bir gün önceki Avrupa kapanışına göre hesaplanır. Bu ikili 27 Ekim&apos;deki resmi
+              &quot;değer&quot; mesajını benzinde birebir tutturdu.
               Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır (motorin ~1,3, benzin ~0,95). Eşel mobil
               uygulanırsa, zammın devletin ÖTV&apos;den karşıladığı payı girin.
             </p>
