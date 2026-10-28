@@ -5,6 +5,7 @@ import Sidebar from "@/components/sidebar";
 import UttsSidebar from "@/components/utts-sidebar";
 import AiSidebar from "@/components/ai/ai-sidebar";
 import AnalitikSidebar from "@/components/analitik-sidebar";
+import YakitOfisiSidebar from "@/components/yakit-ofisi-sidebar";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -20,10 +21,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isUttsPanel = pathname.startsWith("/utts");
   const isAiPanel = pathname.startsWith("/ai");
   const isAnalitikPanel = pathname.startsWith("/analitik");
+  const isYakitOfisiPanel = pathname.startsWith("/yakit-ofisi");
 
   return (
     <div className="flex h-screen">
-      {isAnalitikPanel ? (
+      {isYakitOfisiPanel ? (
+        <YakitOfisiSidebar />
+      ) : isAnalitikPanel ? (
         <AnalitikSidebar />
       ) : isAiPanel ? (
         <AiSidebar />

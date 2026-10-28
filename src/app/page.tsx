@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Fuel, RadioTower, Sparkles, Users } from "lucide-react";
+import { ArrowRight, CreditCard, Fuel, RadioTower, Sparkles, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,13 @@ const modules = [
     description:
       "Peşin müşterilerin plaka bazlı ziyaret sıklığı, RFM segmentleri ve iskonto/zarar analizi.",
     icon: Users,
+  },
+  {
+    href: "/yakit-ofisi",
+    title: "Yakıt Ofisi",
+    description:
+      "Yakıt Ofisi'ndeki filo müşterilerinin vadesi geçen borçları, limiti bitenler ve alım uyarıları (yalnız okuma).",
+    icon: CreditCard,
   },
 ];
 
