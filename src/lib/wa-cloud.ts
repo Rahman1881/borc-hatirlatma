@@ -154,14 +154,33 @@ export async function completeSignup(input: {
   wabaId?: string;
   phoneNumberId?: string;
   businessId?: string;
+  redirectUri?: string;
 }): Promise<CloudStatus> {
   const secret = getSetting(KEYS.appSecret);
   if (!secret) throw new Error("Önce App Secret'ı kaydedin.");
   const { appId } = getAppConfig();
 
-  const tok = await graph<{ access_token: string }>("GET", "oauth/access_token", {
-    query: { client_id: appId, client_secret: secret, code: input.code },
-  });
+  // Belgelere göre JS SDK'dan gelen kodda redirect_uri gönderilmez; ama Meta bazen kodu pencerenin
+  // açıldığı sayfaya bağlayıp "redirect_uri is identical" hatası veriyor. Bu hatada sayfa adresiyle denenir.
+  const redirects: (string | undefined)[] = [undefined];
+  if (input.redirectUri) {
+    for (const r of [input.redirectUri, new URL(input.redirectUri).origin + "/"]) {
+      if (!redirects.includes(r)) redirects.push(r);
+    }
+  }
+  let tok: { access_token: string } | null = null;
+  for (const redirect_uri of redirects) {
+    try {
+      tok = await graph<{ access_token: string }>("GET", "oauth/access_token", {
+        query: { client_id: appId, client_secret: secret, code: input.code, ...(redirect_uri ? { redirect_uri } : {}) },
+      });
+      break;
+    } catch (err) {
+      const last = redirect_uri === redirects[redirects.length - 1];
+      if (last || !(err instanceof Error) || !err.message.includes("redirect_uri")) throw err;
+    }
+  }
+  if (!tok) throw new Error("Meta erişim anahtarı alınamadı.");
 
   // Pencere mesajı gelmediyse WABA kimliği, kullanıcının verdiği yetkinin kapsamından okunur.
   let wabaId = input.wabaId ?? "";

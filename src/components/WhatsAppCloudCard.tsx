@@ -109,6 +109,7 @@ export default function WhatsAppCloudCard() {
           wabaId: st.data?.waba_id,
           phoneNumberId: st.data?.phone_number_id,
           businessId: st.data?.business_id,
+          redirectUri: window.location.origin + window.location.pathname,
         }),
       });
       const d = await r.json();

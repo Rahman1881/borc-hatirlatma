@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
         wabaId: wabaId || undefined,
         phoneNumberId: phoneNumberId || undefined,
         businessId: body?.businessId ? String(body.businessId) : undefined,
+        redirectUri: typeof body?.redirectUri === "string" && /^https?:\/\//.test(body.redirectUri) ? body.redirectUri : undefined,
       });
       return NextResponse.json(status);
     }
