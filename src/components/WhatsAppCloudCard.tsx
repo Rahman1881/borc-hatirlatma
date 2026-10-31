@@ -10,7 +10,7 @@ import { toast } from "sonner";
 
 // Ayarlar → WhatsApp resmi API (Meta Cloud API, coexistence) bağlantısı.
 // Numara telefondaki WhatsApp Business uygulamasında kalır; Meta'nın Embedded Signup
-// penceresiyle aynı numara API'ye de bağlanır.
+// sayfasıyla aynı numara API'ye de bağlanır.
 
 type CloudStatus = {
   appId: string;
@@ -27,21 +27,19 @@ type CloudStatus = {
   lastWebhookAt: string;
 };
 
-type SignupData = { waba_id?: string; phone_number_id?: string; business_id?: string };
-
-type FBLoginResponse = { status?: string; authResponse?: { code?: string } | null };
-type FBSdk = {
-  init: (o: { appId: string; autoLogAppEvents: boolean; xfbml: boolean; version: string }) => void;
-  login: (cb: (r: FBLoginResponse) => void, o: Record<string, unknown>) => void;
-};
-declare global {
-  interface Window {
-    FB?: FBSdk;
-    fbAsyncInit?: () => void;
-  }
-}
-
 const GRAPH_VERSION = "v26.0";
+
+// Meta bağlantısı tam sayfa yönlendirmeyle yapılır: Facebook sayfası açılır, bitince
+// ?code=… ile bu sayfaya döner. Kod, aynı redirect_uri ile sunucuda anahtara çevrilir.
+// (JS SDK açılır penceresi kodu doğrulanamayan bir adrese bağlıyordu.)
+const RETURN_PATH = "/settings";
+const STATE_KEY = "wa-cloud-signup-state";
+
+function readReturn(): URLSearchParams | null {
+  if (typeof window === "undefined") return null;
+  const q = new URLSearchParams(window.location.search);
+  return q.has("state") && (q.has("code") || q.has("error")) ? q : null;
+}
 
 function fmt(iso: string): string {
   if (!iso) return "—";
@@ -53,12 +51,11 @@ export default function WhatsAppCloudCard() {
   const [status, setStatus] = useState<CloudStatus | null>(null);
   const [secret, setSecret] = useState("");
   const [editingSecret, setEditingSecret] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [sdkReady, setSdkReady] = useState(false);
-  // Embedded Signup iki ayrı yoldan sonuç verir: pencere mesajı (hesap/numara kimlikleri)
-  // ve FB.login geri çağrısı (tek kullanımlık kod, ~30 sn geçerli). İkisi de gelince
-  // sunucuya gönderilir.
-  const signup = useRef<{ data?: SignupData; code?: string; sent?: boolean; timer?: ReturnType<typeof setTimeout> }>({});
+  // Facebook'tan dönülmüşse bağlantı tamamlanana kadar düğme meşgul görünür.
+  const [busy, setBusy] = useState(() => readReturn() !== null);
+  const handled = useRef(false);
+  // Facebook'tan dönüşteki hata kartta kalır (sayfa açılırken gösterilen bildirim kaybolabiliyor).
+  const [returnError, setReturnError] = useState("");
 
   const load = useCallback(() => {
     fetch("/api/whatsapp-cloud")
@@ -71,83 +68,44 @@ export default function WhatsAppCloudCard() {
     load();
   }, [load]);
 
-  // Facebook JS SDK — yalnız bu kart açıkken yüklenir.
+  // Facebook'tan dönüş: kod ≈30 sn geçerli, hemen sunucuya gönderilir.
   useEffect(() => {
-    if (!status?.appId) return;
-    if (window.FB) {
-      setSdkReady(true);
-      return;
-    }
-    window.fbAsyncInit = () => {
-      window.FB?.init({ appId: status.appId, autoLogAppEvents: true, xfbml: true, version: GRAPH_VERSION });
-      setSdkReady(true);
-    };
-    if (!document.getElementById("facebook-jssdk")) {
-      const s = document.createElement("script");
-      s.id = "facebook-jssdk";
-      s.async = true;
-      s.defer = true;
-      s.crossOrigin = "anonymous";
-      s.src = "https://connect.facebook.net/en_US/sdk.js";
-      document.body.appendChild(s);
-    }
-  }, [status?.appId]);
+    const q = readReturn();
+    if (!q || handled.current) return;
+    handled.current = true;
+    window.history.replaceState(null, "", RETURN_PATH);
 
-  // force: pencere mesajı gelmese de yalnız kodla gönderilir; hesap sunucuda koddan bulunur.
-  const trySend = useCallback(async (force = false) => {
-    const st = signup.current;
-    if (st.sent || !st.code || (!st.data?.waba_id && !force)) return;
-    st.sent = true;
-    clearTimeout(st.timer);
+    let expected: string | null = null;
     try {
-      const r = await fetch("/api/whatsapp-cloud", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "connect",
-          code: st.code,
-          wabaId: st.data?.waba_id,
-          phoneNumberId: st.data?.phone_number_id,
-          businessId: st.data?.business_id,
-          redirectUri: window.location.origin + window.location.pathname,
-        }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || "Bağlantı tamamlanamadı.");
-      setStatus(d);
-      toast.success("WhatsApp numarası resmi API'ye bağlandı.");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Bağlantı tamamlanamadı.");
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+      expected = sessionStorage.getItem(STATE_KEY);
+      sessionStorage.removeItem(STATE_KEY);
+    } catch {}
 
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (!event.origin.endsWith("facebook.com")) return;
-      let msg: { type?: string; event?: string; data?: SignupData & { current_step?: string; error_message?: string } };
+    const complete = async () => {
       try {
-        msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-      } catch {
-        return;
-      }
-      if (msg?.type !== "WA_EMBEDDED_SIGNUP") return;
-      console.info("[WA signup]", msg.event, msg.data);
-      if (msg.event?.startsWith("FINISH")) {
-        signup.current.data = msg.data;
-        void trySend();
-      } else if (msg.event === "CANCEL") {
+        if (q.has("error")) {
+          throw new Error(q.get("error_description") || q.get("error_reason") || "Bağlantı yarıda bırakıldı.");
+        }
+        if (!expected || q.get("state") !== expected) {
+          throw new Error("Bağlantı isteği bu tarayıcıdan başlatılmamış. Tekrar deneyin.");
+        }
+        const r = await fetch("/api/whatsapp-cloud", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "connect", code: q.get("code"), redirectUri: window.location.origin + RETURN_PATH }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Bağlantı tamamlanamadı.");
+        setStatus(d);
+        toast.success("WhatsApp numarası resmi API'ye bağlandı.");
+      } catch (err) {
+        setReturnError(err instanceof Error ? err.message : "Bağlantı tamamlanamadı.");
+      } finally {
         setBusy(false);
-        toast.message(`Bağlantı yarıda bırakıldı${msg.data?.current_step ? ` (${msg.data.current_step})` : ""}.`);
-      } else if (msg.event === "ERROR") {
-        setBusy(false);
-        toast.error(msg.data?.error_message || "Meta bağlantı penceresi hata verdi.");
       }
     };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [trySend]);
+    void complete();
+  }, []);
 
   const saveSecret = async () => {
     setBusy(true);
@@ -171,31 +129,24 @@ export default function WhatsAppCloudCard() {
   };
 
   const connect = () => {
-    if (!window.FB || !status) return;
+    if (!status) return;
     setBusy(true);
-    signup.current = {};
-    window.FB.login(
-      (response) => {
-        console.info("[WA signup] login", response.status, Boolean(response.authResponse?.code));
-        const code = response.authResponse?.code;
-        if (!code) {
-          setBusy(false);
-          toast.error("Meta penceresi bağlantı tamamlanmadan kapandı. Tekrar deneyin.");
-          return;
-        }
-        signup.current.code = code;
-        void trySend();
-        // Kod ≈30 sn geçerli; hesap bilgisi mesajı birkaç saniyede gelmezse kodla devam edilir.
-        signup.current.timer = setTimeout(() => void trySend(true), 4000);
-      },
-      {
-        config_id: status.configId,
-        response_type: "code",
-        override_default_response_type: true,
-        // Uygulamadaki numarayı uygulamadan çıkarmadan bağlar (coexistence).
-        extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
-      }
-    );
+    setReturnError("");
+    const state = crypto.randomUUID();
+    try {
+      sessionStorage.setItem(STATE_KEY, state);
+    } catch {}
+    const params = new URLSearchParams({
+      client_id: status.appId,
+      config_id: status.configId,
+      response_type: "code",
+      override_default_response_type: "true",
+      redirect_uri: window.location.origin + RETURN_PATH,
+      state,
+      // Uygulamadaki numarayı uygulamadan çıkarmadan bağlar (coexistence).
+      extras: JSON.stringify({ setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" }),
+    });
+    window.location.href = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth?${params}`;
   };
 
   const finish = async () => {
@@ -334,13 +285,18 @@ export default function WhatsAppCloudCard() {
             </div>
           ) : (
             <>
-              <Button onClick={connect} disabled={busy || !sdkReady || !status.hasAppSecret}>
-                {busy ? "Meta penceresi açık…" : "WhatsApp Business numarasını bağla"}
+              <Button onClick={connect} disabled={busy || !status.hasAppSecret}>
+                {busy ? "Bağlanıyor…" : "WhatsApp Business numarasını bağla"}
               </Button>
+              {returnError && (
+                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-destructive">
+                  Bağlantı tamamlanamadı: {returnError}
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">
                 {!status.hasAppSecret
                   ? "Önce App Secret'ı kaydedin."
-                  : "Facebook penceresinde işletmenizi ve numaranızı seçin; telefondaki WhatsApp Business'tan onay istenecek. Bağlantıdan sonraki 24 saat içinde geçmiş sohbetler otomatik aktarılır."}
+                  : "Facebook sayfasında işletmenizi ve numaranızı seçin; telefondaki WhatsApp Business'tan onay istenecek. Bağlantıdan sonraki 24 saat içinde geçmiş sohbetler otomatik aktarılır."}
               </p>
             </>
           )}

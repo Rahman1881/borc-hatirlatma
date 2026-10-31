@@ -160,29 +160,17 @@ export async function completeSignup(input: {
   if (!secret) throw new Error("Önce App Secret'ı kaydedin.");
   const { appId } = getAppConfig();
 
-  // Belgelere göre JS SDK'dan gelen kodda redirect_uri gönderilmez; ama Meta bazen kodu pencerenin
-  // açıldığı sayfaya bağlayıp "redirect_uri is identical" hatası veriyor. Bu hatada sayfa adresiyle denenir.
-  const redirects: (string | undefined)[] = [undefined];
-  if (input.redirectUri) {
-    for (const r of [input.redirectUri, new URL(input.redirectUri).origin + "/"]) {
-      if (!redirects.includes(r)) redirects.push(r);
-    }
-  }
-  let tok: { access_token: string } | null = null;
-  for (const redirect_uri of redirects) {
-    try {
-      tok = await graph<{ access_token: string }>("GET", "oauth/access_token", {
-        query: { client_id: appId, client_secret: secret, code: input.code, ...(redirect_uri ? { redirect_uri } : {}) },
-      });
-      break;
-    } catch (err) {
-      const last = redirect_uri === redirects[redirects.length - 1];
-      if (last || !(err instanceof Error) || !err.message.includes("redirect_uri")) throw err;
-    }
-  }
-  if (!tok) throw new Error("Meta erişim anahtarı alınamadı.");
+  // Kod, Facebook sayfasına verilen redirect_uri ile birebir aynı adresle anahtara çevrilir.
+  const tok = await graph<{ access_token: string }>("GET", "oauth/access_token", {
+    query: {
+      client_id: appId,
+      client_secret: secret,
+      code: input.code,
+      ...(input.redirectUri ? { redirect_uri: input.redirectUri } : {}),
+    },
+  });
 
-  // Pencere mesajı gelmediyse WABA kimliği, kullanıcının verdiği yetkinin kapsamından okunur.
+  // Yönlendirmeyle bağlanınca Meta hesap kimliğini göndermez; kullanıcının verdiği yetkinin kapsamından okunur.
   let wabaId = input.wabaId ?? "";
   if (!wabaId) {
     const dbg = await graph<{ data?: { granular_scopes?: { scope: string; target_ids?: string[] }[] } }>(
@@ -193,7 +181,7 @@ export async function completeSignup(input: {
     const scopes = dbg.data?.granular_scopes ?? [];
     const ids = (s: string) => scopes.find((g) => g.scope === s)?.target_ids ?? [];
     wabaId = ids("whatsapp_business_management")[0] ?? ids("whatsapp_business_messaging")[0] ?? "";
-    if (!wabaId) throw new Error("Meta penceresinde WhatsApp hesabı seçilmemiş görünüyor. Tekrar deneyin.");
+    if (!wabaId) throw new Error("Facebook sayfasında WhatsApp hesabı seçilmemiş görünüyor. Tekrar deneyin.");
   }
 
   // Uygulama numarası bağlama (coexistence) bitişinde Meta yalnız WABA kimliğini
