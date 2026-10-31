@@ -29,7 +29,7 @@ type CloudStatus = {
 
 type SignupData = { waba_id?: string; phone_number_id?: string; business_id?: string };
 
-type FBLoginResponse = { authResponse?: { code?: string } | null };
+type FBLoginResponse = { status?: string; authResponse?: { code?: string } | null };
 type FBSdk = {
   init: (o: { appId: string; autoLogAppEvents: boolean; xfbml: boolean; version: string }) => void;
   login: (cb: (r: FBLoginResponse) => void, o: Record<string, unknown>) => void;
@@ -58,7 +58,7 @@ export default function WhatsAppCloudCard() {
   // Embedded Signup iki ayrı yoldan sonuç verir: pencere mesajı (hesap/numara kimlikleri)
   // ve FB.login geri çağrısı (tek kullanımlık kod, ~30 sn geçerli). İkisi de gelince
   // sunucuya gönderilir.
-  const signup = useRef<{ data?: SignupData; code?: string; sent?: boolean }>({});
+  const signup = useRef<{ data?: SignupData; code?: string; sent?: boolean; timer?: ReturnType<typeof setTimeout> }>({});
 
   const load = useCallback(() => {
     fetch("/api/whatsapp-cloud")
@@ -93,10 +93,12 @@ export default function WhatsAppCloudCard() {
     }
   }, [status?.appId]);
 
-  const trySend = useCallback(async () => {
+  // force: pencere mesajı gelmese de yalnız kodla gönderilir; hesap sunucuda koddan bulunur.
+  const trySend = useCallback(async (force = false) => {
     const st = signup.current;
-    if (st.sent || !st.code || !st.data?.waba_id) return;
+    if (st.sent || !st.code || (!st.data?.waba_id && !force)) return;
     st.sent = true;
+    clearTimeout(st.timer);
     try {
       const r = await fetch("/api/whatsapp-cloud", {
         method: "POST",
@@ -104,9 +106,9 @@ export default function WhatsAppCloudCard() {
         body: JSON.stringify({
           action: "connect",
           code: st.code,
-          wabaId: st.data.waba_id,
-          phoneNumberId: st.data.phone_number_id,
-          businessId: st.data.business_id,
+          wabaId: st.data?.waba_id,
+          phoneNumberId: st.data?.phone_number_id,
+          businessId: st.data?.business_id,
         }),
       });
       const d = await r.json();
@@ -130,6 +132,7 @@ export default function WhatsAppCloudCard() {
         return;
       }
       if (msg?.type !== "WA_EMBEDDED_SIGNUP") return;
+      console.info("[WA signup]", msg.event, msg.data);
       if (msg.event?.startsWith("FINISH")) {
         signup.current.data = msg.data;
         void trySend();
@@ -172,20 +175,24 @@ export default function WhatsAppCloudCard() {
     signup.current = {};
     window.FB.login(
       (response) => {
+        console.info("[WA signup] login", response.status, Boolean(response.authResponse?.code));
         const code = response.authResponse?.code;
         if (!code) {
           setBusy(false);
+          toast.error("Meta penceresi bağlantı tamamlanmadan kapandı. Tekrar deneyin.");
           return;
         }
         signup.current.code = code;
         void trySend();
+        // Kod ≈30 sn geçerli; hesap bilgisi mesajı birkaç saniyede gelmezse kodla devam edilir.
+        signup.current.timer = setTimeout(() => void trySend(true), 4000);
       },
       {
         config_id: status.configId,
         response_type: "code",
         override_default_response_type: true,
         // Uygulamadaki numarayı uygulamadan çıkarmadan bağlar (coexistence).
-        extras: { setup: {}, featureType: "whatsapp_business_app_onboarding" },
+        extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
       }
     );
   };

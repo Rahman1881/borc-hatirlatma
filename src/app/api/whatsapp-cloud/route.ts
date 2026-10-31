@@ -45,15 +45,15 @@ export async function POST(req: NextRequest) {
       const code = String(body?.code ?? "");
       const wabaId = String(body?.wabaId ?? "");
       const phoneNumberId = String(body?.phoneNumberId ?? "");
-      if (!code || !wabaId) {
+      if (!code) {
         return NextResponse.json(
-          { error: "Meta'dan eksik bilgi geldi (kod ya da hesap kimliği yok)." },
+          { error: "Meta'dan eksik bilgi geldi (kod yok)." },
           { status: 400 }
         );
       }
       const status = await completeSignup({
         code,
-        wabaId,
+        wabaId: wabaId || undefined,
         phoneNumberId: phoneNumberId || undefined,
         businessId: body?.businessId ? String(body.businessId) : undefined,
       });

@@ -151,7 +151,7 @@ async function graph<T>(
 // içinde yapılması zorunlu rehber + geçmiş aktarımını başlatır.
 export async function completeSignup(input: {
   code: string;
-  wabaId: string;
+  wabaId?: string;
   phoneNumberId?: string;
   businessId?: string;
 }): Promise<CloudStatus> {
@@ -163,11 +163,25 @@ export async function completeSignup(input: {
     query: { client_id: appId, client_secret: secret, code: input.code },
   });
 
+  // Pencere mesajı gelmediyse WABA kimliği, kullanıcının verdiği yetkinin kapsamından okunur.
+  let wabaId = input.wabaId ?? "";
+  if (!wabaId) {
+    const dbg = await graph<{ data?: { granular_scopes?: { scope: string; target_ids?: string[] }[] } }>(
+      "GET",
+      "debug_token",
+      { query: { input_token: tok.access_token, access_token: `${appId}|${secret}` } }
+    );
+    const scopes = dbg.data?.granular_scopes ?? [];
+    const ids = (s: string) => scopes.find((g) => g.scope === s)?.target_ids ?? [];
+    wabaId = ids("whatsapp_business_management")[0] ?? ids("whatsapp_business_messaging")[0] ?? "";
+    if (!wabaId) throw new Error("Meta penceresinde WhatsApp hesabı seçilmemiş görünüyor. Tekrar deneyin.");
+  }
+
   // Uygulama numarası bağlama (coexistence) bitişinde Meta yalnız WABA kimliğini
   // gönderebiliyor; numara kimliği yoksa hesaptan okunur.
   let phoneNumberId = input.phoneNumberId ?? "";
   if (!phoneNumberId) {
-    const nums = await graph<{ data?: { id: string }[] }>("GET", `${input.wabaId}/phone_numbers`, {
+    const nums = await graph<{ data?: { id: string }[] }>("GET", `${wabaId}/phone_numbers`, {
       token: tok.access_token,
     });
     phoneNumberId = nums.data?.[0]?.id ?? "";
@@ -175,7 +189,7 @@ export async function completeSignup(input: {
   }
 
   setSetting(KEYS.accessToken, tok.access_token);
-  setSetting(KEYS.wabaId, input.wabaId);
+  setSetting(KEYS.wabaId, wabaId);
   setSetting(KEYS.phoneNumberId, phoneNumberId);
   if (input.businessId) setSetting(KEYS.businessId, input.businessId);
   setSetting(KEYS.connectedAt, new Date().toISOString());
