@@ -205,6 +205,26 @@ export async function completeSignup(input: {
   return getStatus();
 }
 
+// Facebook penceresi olmadan bağlantı: uygulamanın sahibi olan işletme numarayı kendi
+// portföyüne bağladığında Embedded Signup'ın son adımı (hesabı uygulama sahibiyle paylaşma)
+// "geçerli bir İşletme Kodu değil" hatası veriyor. Bu durumda Meta Business Suite'te sistem
+// kullanıcısı için üretilen süresiz anahtar ve WABA kimliği elle girilir.
+export async function connectWithToken(input: { token: string; wabaId: string }): Promise<CloudStatus> {
+  const nums = await graph<{ data?: { id: string }[] }>("GET", `${input.wabaId}/phone_numbers`, {
+    token: input.token,
+  });
+  const phoneNumberId = nums.data?.[0]?.id ?? "";
+  if (!phoneNumberId) throw new Error("Bu WhatsApp hesabında numara bulunamadı.");
+
+  setSetting(KEYS.accessToken, input.token);
+  setSetting(KEYS.wabaId, input.wabaId);
+  setSetting(KEYS.phoneNumberId, phoneNumberId);
+  setSetting(KEYS.connectedAt, new Date().toISOString());
+
+  await finishSetup();
+  return getStatus();
+}
+
 // Bağlantının ikinci yarısı: uygulamayı WABA'nın webhook'larına abone eder (yoksa Meta
 // mesajları göndermez) ve geçmiş aktarımını başlatır. Erişim anahtarı kaydedildikten sonra
 // ayrı çalıştırılabilir; bu adım hata verirse Embedded Signup'ı baştan yapmak gerekmez.

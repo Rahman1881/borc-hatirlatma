@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   completeSignup,
+  connectWithToken,
   finishSetup,
   getStatus,
   saveAppSecret,
@@ -10,7 +11,7 @@ import {
 // anahtarı) hiçbir zaman cevapta dönmez.
 //
 // GET  -> durum
-// POST -> action: saveSecret | connect | finish
+// POST -> action: saveSecret | connect | connectToken | finish
 
 export async function GET() {
   try {
@@ -59,6 +60,18 @@ export async function POST(req: NextRequest) {
         redirectUri: typeof body?.redirectUri === "string" && /^https?:\/\//.test(body.redirectUri) ? body.redirectUri : undefined,
       });
       return NextResponse.json(status);
+    }
+
+    if (action === "connectToken") {
+      const token = String(body?.token ?? "").trim();
+      const wabaId = String(body?.wabaId ?? "").trim();
+      if (token.length < 50 || /\s/.test(token)) {
+        return NextResponse.json({ error: "Erişim anahtarı eksik ya da hatalı görünüyor." }, { status: 400 });
+      }
+      if (!/^\d{5,20}$/.test(wabaId)) {
+        return NextResponse.json({ error: "WhatsApp hesap kodu yalnız rakamlardan oluşmalı." }, { status: 400 });
+      }
+      return NextResponse.json(await connectWithToken({ token, wabaId }));
     }
 
     // Bağlantı kuruldu ama webhook aboneliği / geçmiş aktarımı yarım kaldıysa.

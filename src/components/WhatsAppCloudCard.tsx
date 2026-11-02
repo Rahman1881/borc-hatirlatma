@@ -56,6 +56,8 @@ export default function WhatsAppCloudCard() {
   const handled = useRef(false);
   // Facebook'tan dönüşteki hata kartta kalır (sayfa açılırken gösterilen bildirim kaybolabiliyor).
   const [returnError, setReturnError] = useState("");
+  const [manualToken, setManualToken] = useState("");
+  const [manualWaba, setManualWaba] = useState("");
 
   const load = useCallback(() => {
     fetch("/api/whatsapp-cloud")
@@ -147,6 +149,28 @@ export default function WhatsAppCloudCard() {
       extras: JSON.stringify({ setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" }),
     });
     window.location.href = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth?${params}`;
+  };
+
+  // Facebook penceresi olmadan: sistem kullanıcısı anahtarı + WhatsApp hesap kodu.
+  const connectToken = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/whatsapp-cloud", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "connectToken", token: manualToken, wabaId: manualWaba }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Bağlantı tamamlanamadı.");
+      setStatus(d);
+      setManualToken("");
+      toast.success("WhatsApp numarası resmi API'ye bağlandı.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bağlantı tamamlanamadı.");
+      load();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const finish = async () => {
@@ -298,6 +322,38 @@ export default function WhatsAppCloudCard() {
                   ? "Önce App Secret'ı kaydedin."
                   : "Facebook sayfasında işletmenizi ve numaranızı seçin; telefondaki WhatsApp Business'tan onay istenecek. Bağlantıdan sonraki 24 saat içinde geçmiş sohbetler otomatik aktarılır."}
               </p>
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer font-medium">
+                  Facebook penceresi olmadan bağla (sistem kullanıcısı anahtarı)
+                </summary>
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Meta Business Suite → Ayarlar → Sistem kullanıcıları → Token oluştur (süre: Hiçbir zaman;
+                    izinler: whatsapp_business_management, whatsapp_business_messaging). Hesap kodu:
+                    Ayarlar → WhatsApp hesapları → hesabın &quot;Kod&quot; satırı.
+                  </p>
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={manualToken}
+                    onChange={(e) => setManualToken(e.target.value)}
+                    placeholder="Erişim anahtarı (token)"
+                  />
+                  <Input
+                    inputMode="numeric"
+                    value={manualWaba}
+                    onChange={(e) => setManualWaba(e.target.value.trim())}
+                    placeholder="WhatsApp hesap kodu (WABA ID)"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={connectToken}
+                    disabled={busy || !manualToken.trim() || !manualWaba}
+                  >
+                    {busy ? "Bağlanıyor…" : "Anahtarla bağla"}
+                  </Button>
+                </div>
+              </details>
             </>
           )}
         </div>
