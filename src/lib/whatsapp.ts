@@ -396,6 +396,26 @@ function randomDelay(min: number, max: number): number {
 
 export const NOT_ON_WHATSAPP = "Bu numara WhatsApp kullanmıyor";
 
+// WhatsApp Web yeni bağlandığında (ilk eşitleme) ya da takıldığında isRegisteredUser /
+// sendMessage hiç dönmeyebiliyor; ekran "Gönderiliyor…"da kalıyordu. Süre dolunca hata
+// döner. Gönderim zaman aşımında mesaj yine de geç gidebilir; bu yüzden ayrı mesajla belirtilir.
+const CHECK_TIMEOUT_MS = 30_000;
+const SEND_TIMEOUT_MS = 90_000;
+const SEND_TIMEOUT_MESSAGE =
+  "Gönderim zaman aşımına uğradı; mesaj geç de olsa gitmiş olabilir, telefondan sohbeti kontrol edin.";
+
+class TimeoutError extends Error {}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new TimeoutError(message)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 const DISCONNECTED_MESSAGE =
   "WhatsApp bağlantısı koptu. Otomatik yeniden bağlanılıyor; birkaç dakika içinde düzelmezse Ayarlar'dan bağlanın.";
 
@@ -494,22 +514,26 @@ export async function sendWhatsAppMessage(
       chatId = `${chatId}@c.us`;
     }
 
-    const isRegistered = await client.isRegisteredUser(chatId);
+    const isRegistered = await withTimeout(
+      client.isRegisteredUser(chatId),
+      CHECK_TIMEOUT_MS,
+      "WhatsApp numara kontrolüne cevap vermedi (yeni bağlandıysa eşitleme sürüyor olabilir). Birkaç dakika sonra tekrar deneyin."
+    );
     if (!isRegistered) {
       return { success: false, error: NOT_ON_WHATSAPP };
     }
 
-    // Logo varsa resim + caption olarak gönder, yoksa sadece metin
-    if (fs.existsSync(LOGO_PATH)) {
-      const media = MessageMedia.fromFilePath(LOGO_PATH);
-      await client.sendMessage(chatId, media, { caption: body });
-    } else {
-      await client.sendMessage(chatId, body);
-    }
+    // Logo varsa resim + caption olarak gönder, yoksa sadece metin.
+    // sendSeen kapalı: "okundu" işaretleme adımı eşitleme sırasında takılabiliyor ve gönderim için gereksiz.
+    const sending = fs.existsSync(LOGO_PATH)
+      ? client.sendMessage(chatId, MessageMedia.fromFilePath(LOGO_PATH), { caption: body, sendSeen: false })
+      : client.sendMessage(chatId, body, { sendSeen: false });
+    await withTimeout(sending, SEND_TIMEOUT_MS, SEND_TIMEOUT_MESSAGE);
 
     return { success: true };
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : "Bilinmeyen hata";
+    if (err instanceof TimeoutError) return { success: false, error };
     // Oturum çöktüyse ham Puppeteer hatasını göstermek yerine ne olduğunu söyle.
     if (isDeadSessionError(error) || !isSessionAlive()) {
       await markSessionDead();
