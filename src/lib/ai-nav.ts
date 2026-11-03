@@ -7,6 +7,7 @@ import {
   Fuel,
   BarChart3,
   TrendingUp,
+  Truck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,6 +54,12 @@ export const aiNavItems: AiNavItem[] = [
     label: "Satış Raporu",
     description: "Vardiya bazlı pompa satışları",
     icon: BarChart3,
+  },
+  {
+    href: "/ai/filo-satislari",
+    label: "Filo Satışları",
+    description: "Filo bazlı satışlar ve plaka dökümü",
+    icon: Truck,
   },
   {
     href: "/ai/raporlar",

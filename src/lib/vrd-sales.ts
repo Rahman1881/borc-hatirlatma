@@ -435,3 +435,143 @@ export function summarizeFiles(files: string[]): Aggregation {
     .flatMap((s) => s.sales);
   return summarizeSales(sales);
 }
+
+// ---- Filo Satışları ----
+
+export type FleetRow = {
+  ad: string;
+  kodlar: string[];
+  musteri: CustomerKind;
+  tutar: number;
+  litre: number;
+  adet: number;
+  plakaSayisi: number;
+  ilkAlim: string; // YYYY-MM-DD SS:DD:SS
+  sonAlim: string;
+};
+
+export type FleetPlateRow = {
+  plaka: string;
+  tutar: number;
+  litre: number;
+  adet: number;
+  yakitlar: string; // "Motorin, Benzin"
+  ilkAlim: string;
+  sonAlim: string;
+};
+
+export type FleetSaleRow = SaleRecord & { iso: string };
+
+// Filo/açık hesap satışı mı? (summarizeSales'teki topFilolar ile aynı kural.)
+function isFleetSale(s: SaleRecord): boolean {
+  return (
+    s.musteri !== "istasyon" &&
+    !!s.filoAdi &&
+    s.filoAdi.toLocaleUpperCase("tr") !== "ISTASYON"
+  );
+}
+
+// Filo kayıtlarında PLAKA ile PLAKA2 aynıdır; boşsa PLAKA2'ye düşülür.
+export function salePlate(s: SaleRecord): string {
+  return (s.plaka || s.plaka2 || "").replace(/\s+/g, "").toLocaleUpperCase("tr") || "(plakasız)";
+}
+
+// Seçili vardiyalardaki filo satışlarını (tarih + saat sıralı) döndürür.
+// fleet verilirse yalnız o filonun satışları gelir.
+export function fleetSalesOf(files: string[], fleet?: string): FleetSaleRow[] {
+  const set = new Set(files);
+  const rows: FleetSaleRow[] = [];
+  for (const sh of getAllShifts()) {
+    if (!set.has(sh.file)) continue;
+    for (const s of sh.sales) {
+      if (!isFleetSale(s)) continue;
+      if (fleet !== undefined && s.filoAdi.trim() !== fleet) continue;
+      rows.push({ ...s, iso: isoFromTarih(s.tarih) || sh.iso });
+    }
+  }
+  rows.sort((a, b) =>
+    a.iso !== b.iso ? (a.iso < b.iso ? -1 : 1) : a.saat.localeCompare(b.saat)
+  );
+  return rows;
+}
+
+// Tüm filoların dönem toplamları (tutara göre büyükten küçüğe).
+export function summarizeFleets(sales: FleetSaleRow[]): FleetRow[] {
+  const map = new Map<
+    string,
+    { kodlar: Set<string>; musteri: CustomerKind; tutar: number; litre: number; adet: number; plakalar: Set<string>; ilk: string; son: string }
+  >();
+  for (const s of sales) {
+    const key = s.filoAdi.trim();
+    const when = `${s.iso} ${s.saat}`;
+    const f = map.get(key) || {
+      kodlar: new Set<string>(),
+      musteri: s.musteri,
+      tutar: 0,
+      litre: 0,
+      adet: 0,
+      plakalar: new Set<string>(),
+      ilk: when,
+      son: when,
+    };
+    if (s.kodu) f.kodlar.add(s.kodu);
+    f.tutar += s.tutar;
+    f.litre += s.litre;
+    f.adet += 1;
+    f.plakalar.add(salePlate(s));
+    if (when < f.ilk) f.ilk = when;
+    if (when > f.son) f.son = when;
+    map.set(key, f);
+  }
+  return Array.from(map.entries())
+    .map(([ad, v]) => ({
+      ad,
+      kodlar: Array.from(v.kodlar).sort(),
+      musteri: v.musteri,
+      tutar: round2(v.tutar),
+      litre: round2(v.litre),
+      adet: v.adet,
+      plakaSayisi: v.plakalar.size,
+      ilkAlim: v.ilk,
+      sonAlim: v.son,
+    }))
+    .sort((a, b) => b.tutar - a.tutar);
+}
+
+// Bir filonun plaka bazlı dökümü (tutara göre büyükten küçüğe).
+export function summarizePlates(sales: FleetSaleRow[]): FleetPlateRow[] {
+  const map = new Map<
+    string,
+    { tutar: number; litre: number; adet: number; yakitlar: Set<FuelKind>; ilk: string; son: string }
+  >();
+  for (const s of sales) {
+    const key = salePlate(s);
+    const when = `${s.iso} ${s.saat}`;
+    const p = map.get(key) || {
+      tutar: 0,
+      litre: 0,
+      adet: 0,
+      yakitlar: new Set<FuelKind>(),
+      ilk: when,
+      son: when,
+    };
+    p.tutar += s.tutar;
+    p.litre += s.litre;
+    p.adet += 1;
+    p.yakitlar.add(s.yakit);
+    if (when < p.ilk) p.ilk = when;
+    if (when > p.son) p.son = when;
+    map.set(key, p);
+  }
+  return Array.from(map.entries())
+    .map(([plaka, v]) => ({
+      plaka,
+      tutar: round2(v.tutar),
+      litre: round2(v.litre),
+      adet: v.adet,
+      yakitlar: Array.from(v.yakitlar).map((y) => FUEL_LABELS[y]).join(", "),
+      ilkAlim: v.ilk,
+      sonAlim: v.son,
+    }))
+    .sort((a, b) => b.tutar - a.tutar);
+}
