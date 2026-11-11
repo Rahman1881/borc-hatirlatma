@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CreditCard, Fuel, RadioTower, Sparkles, Users } from "lucide-react";
+import { ArrowRight, CreditCard, Fuel, RadioTower, Smartphone, Sparkles, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -41,6 +41,13 @@ const modules = [
     description:
       "Yakıt Ofisi'ndeki filo müşterilerinin vadesi geçen borçları, limiti bitenler ve alım uyarıları (yalnız okuma).",
     icon: CreditCard,
+  },
+  {
+    href: "/cark-mobil",
+    title: "Çark Mobil",
+    description:
+      "Mobil uygulamadaki yönetici işlemleri: sefer planlama ve canlı takip, müşteriler, tankerler, yakıt alımları ve ekip.",
+    icon: Smartphone,
   },
 ];
 
