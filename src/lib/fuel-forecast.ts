@@ -6,14 +6,22 @@ import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 // dolar kuruyla oluşur; son değişiklikten beri bu maliyet belli bir oranı aşınca pompaya
 // zam ya da indirim gelir. Resmi formül yayınlanmadığı için eşik ve ortalama ayardır.
 //
+// Takvim (Kasım 2026 dağıtıcı mesajlarından): karar bir önceki günün kapanışıyla verilir,
+// ertesi gün 16:00'da açıklanır, gece yarısı pompaya yansır. Dağıtıcının her gün gönderdiği
+// "BENZİN/MOTORİN DEĞERİ" ±3'ü geçince değişiklik gelir. Bu resmi değer sisteme girilirse
+// (portal ya da Telegram) akşam tahmini onun üzerine kurulur: son resmi değer + o günden
+// beri 5 günlük ortalamadaki değişim. Girilmezse yalnız model hesabı kullanılır.
+//
 // Veri (otomatik, ücretsiz) — hepsi ICE'tan (ice.com ürün sayfalarının grafik verisi; site
 // şartları otomatik erişimi kısıtlıyor, kullanıcı kararıyla kullanılıyor):
-//  • Motorin: ICE Low Sulphur Gasoil (Avrupa motorini) — Platts Akdeniz motorini buna göre fiyatlanır.
+//  • Motorin: ICE ULSD 10ppm CIF Med Cargoes (Platts Akdeniz motorini). Önceden kullanılan
+//    ICE Low Sulphur Gasoil (Kuzey Avrupa) Akdeniz'den ayrışıyordu (Ekim 2026'da fark
+//    33 → 81 $/ton), resmi değerden 3 puan sapmaya yol açtı.
 //  • Benzin: ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini) — Türkiye'nin benzin bazı.
 //  • Brent (yalnız bilgi, hesaba girmez): ICE Brent.
-//  Her biri önündeki ay kontratının günlük kapanışı ($/ton, Brent $/varil); günün kapanışı henüz
-//  yayınlanmadıysa Londra 16:30 fiyatı gün içi veriden alınır. Veri gelmezse yedek kaynak yoktur;
-//  o gün Telegram'dan hata bildirilir.
+//  Her biri önündeki ay kontratının günlük kapanışı ($/ton, Brent $/varil). Akdeniz
+//  kontratlarında ekranda işlem olmadığı için günün değeri kapanış yayınlanınca gelir. Veri
+//  gelmezse yedek kaynak yoktur; o gün Telegram'dan hata bildirilir.
 //  • Kur: TCMB günlük dolar satış kuru.
 //  • Gerçekleşen değişiklikler: Petrol Ofisi'nin Serdivan fiyat arşivi (her gün); bugünün
 //    fiyatı arşive ertesi gün düştüğü için sabah güncel fiyat sayfasından eklenir.
@@ -36,10 +44,12 @@ export type ForecastConfig = {
   eselPay: number; // eşel mobil: değişimin devletin ÖTV'den karşıladığı payı (%)
   gunlukDurum: boolean; // her gün durum gönder (kapalıysa yalnız uyarılar)
   yoksay: string[]; // baz sayılmayacak pompa değişiklikleri: "YYYY-MM-DD|yakit"
+  say: string[]; // otomatik ÖTV sayılan ama elle "baz say" denen değişiklikler
 };
 
-// Resmi hesap (sektör bilirkişisi): son 5 kapanışın ortalaması. Baz = değişiklikten bir gün
-// önceki kapanış; bu ikili 27 Ekim'deki resmi "değer" mesajını benzinde birebir tutturdu (+2,60).
+// Resmi hesap (sektör bilirkişisi): son 5 kapanışın ortalaması. Baz da aynı ortalamanın karar
+// günündeki değeridir (ortalama/ortalama); tek günün kapanışı baz alınınca sert hareketlerden
+// sonra ortalama ile baz ayrışıyordu (6 Kasım 2026 indiriminin ertesi günü +%4 gösterdi).
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   enabled: true,
   esikPct: 3,
@@ -50,6 +60,7 @@ export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   eselPay: 0,
   gunlukDurum: true,
   yoksay: [],
+  say: [],
 };
 
 export type PriceRow = {
@@ -74,6 +85,7 @@ export type PumpChange = {
   yeni: number;
   fark: number;
   ignored: boolean;
+  otv: boolean; // otomatik ÖTV tespiti (ayın 1'inde iki yakıta birden zam)
 };
 
 export type FuelRow = {
@@ -81,7 +93,9 @@ export type FuelRow = {
   raw: number; // $/ton
   kontrat: string; // ör. "ICE Nov26"
   usd: number;
-  pct: number; // son değişiklikteki baza göre sapma (%)
+  pct: number; // tahmin edilen değer (%): resmi değer varsa onun üzerine, yoksa model
+  model: number; // yalnız model: 5 günlük ortalamanın karar günündeki ortalamaya göre sapması (%)
+  anchor: { tarih: string; deger: number } | null; // tahminin dayandığı resmi değer (mesaj günü)
   tl: number; // pompaya yansıması beklenen TL/litre (KDV dahil)
   level: Level;
   change: PumpChange | null; // hesaba esas son pompa değişikliği
@@ -89,17 +103,24 @@ export type FuelRow = {
   calibrating: boolean; // değişiklikten önceki piyasa verisi yok; baz ilk gün
 };
 
+// Dağıtıcının günlük mesajındaki resmi değer. `tarih` mesajın günüdür; değer o günden önceki
+// son kapanışa kadarki veriyle hesaplanmıştır.
+export type OfficialValue = { tarih: string; yakit: Fuel; deger: number };
+// Resmi değer ile, o değer gelmeden önceki akşam sistemin yaptığı tahmin.
+export type OfficialCheck = OfficialValue & { veriTarih: string; tahmin: number };
+
 export type FuelCalc = {
   yakit: Fuel;
   rows: FuelRow[];
   latest: FuelRow | null;
   lastChange: PumpChange | null;
   changes: (PumpChange & { estimate: FuelRow | null })[];
+  resmi: OfficialCheck[];
 };
 
 // ICE ürünleri: grafik verisi için ürün/hub kimlikleri ve ürün sayfası.
 type IceProduct = { productId: number; hubId: number; page: string };
-const ICE_GASOIL: IceProduct = { productId: 5817, hubId: 9373, page: "34361119/Low-Sulphur-Gasoil-Futures" };
+const ICE_MED_DIESEL: IceProduct = { productId: 2572, hubId: 2885, page: "6753556/ULSD-10ppm-CIF-Med-Cargoes-Future" };
 const ICE_MED_GASOLINE: IceProduct = {
   productId: 3558,
   hubId: 4148,
@@ -112,11 +133,11 @@ const FUELS = [
     key: "motorin",
     col: "ice",
     kcol: "ice_kontrat",
-    product: ICE_GASOIL,
+    product: ICE_MED_DIESEL,
     litrePerTon: 1000 / 0.845,
     label: "Motorin",
     icon: "🛢",
-    source: "Avrupa motorin (ICE)",
+    source: "Akdeniz motorin (ICE)",
   },
   {
     key: "benzin",
@@ -133,13 +154,14 @@ const FUELS = [
 // Petrol Ofisi arşivi: il ve ilçe kodları sitenin kendi kodları (District/Search).
 const PO = { cityId: "54", districtId: "05416", ad: "Petrol Ofisi Serdivan", il: "Sakarya", ilce: "Serdivan", plaka: 54 };
 const PUMP_SOURCE = "po"; // kaynak değişirse pompa geçmişi silinip yeniden doldurulur
+const MOTORIN_SOURCE = "cifmed"; // değişirse kayıtlı motorin serisi yeni kaynaktan yeniden yazılır
 // Bu tutarın altındaki pompa farkları dağıtıcı/bayi marjı oynamasıdır, rafineri
 // değişikliği sayılmaz (baz sıfırlanmaz).
 const MIN_PUMP_CHANGE = 0.3;
 const SNAPSHOT_LONDON = 16 * 60 + 30; // Platts/ICE kapanışı (Londra saati)
 const FETCH_AFTER_LONDON = 16 * 60 + 45; // ICE gün içi verisi ~15 dk gecikmeli
-// Akdeniz benzininde ekranda işlem olmadığı için o günün değeri ancak kapanış yayınlanınca
-// gelir; motorin hazırsa bu saate kadar beklenir, sonra mesaj benzinin son değeriyle gider.
+// Akdeniz kontratlarında ekranda işlem olmadığı için o günün değeri ancak kapanış yayınlanınca
+// gelir; yakıtlardan biri hazırsa bu saate kadar beklenir, sonra mesaj eksik olanın son değeriyle gider.
 const BENZIN_WAIT_LONDON = 20 * 60 + 30;
 const GIVE_UP_LONDON = 22 * 60; // bu saate kadar veri gelmezse o gün hata bildirilir
 const BACKFILL_DAYS = 45; // ilk kurulumda geriye dönük doldurulan gün (ICE günlük verisi ~3 ay)
@@ -196,6 +218,7 @@ export function saveForecastConfig(patch: Partial<ForecastConfig>): ForecastConf
     eselPay: num(patch.eselPay, 0, 100, cur.eselPay),
     gunlukDurum: typeof patch.gunlukDurum === "boolean" ? patch.gunlukDurum : cur.gunlukDurum,
     yoksay: Array.isArray(patch.yoksay) ? patch.yoksay.map(String) : cur.yoksay,
+    say: Array.isArray(patch.say) ? patch.say.map(String) : cur.say,
   };
   setSetting(CONFIG_KEY, JSON.stringify(next));
   return next;
@@ -203,10 +226,18 @@ export function saveForecastConfig(patch: Partial<ForecastConfig>): ForecastConf
 
 export function setChangeIgnored(tarih: string, yakit: Fuel, ignored: boolean): ForecastConfig {
   const key = `${tarih}|${yakit}`;
-  const set = new Set(getForecastConfig().yoksay);
-  if (ignored) set.add(key);
-  else set.delete(key);
-  return saveForecastConfig({ yoksay: [...set] });
+  const cfg = getForecastConfig();
+  const yoksay = new Set(cfg.yoksay);
+  const say = new Set(cfg.say);
+  // "baz say" otomatik ÖTV tespitini de ezer; "sayma" ise elle yoksaymadır.
+  if (ignored) {
+    yoksay.add(key);
+    say.delete(key);
+  } else {
+    yoksay.delete(key);
+    say.add(key);
+  }
+  return saveForecastConfig({ yoksay: [...yoksay], say: [...say] });
 }
 
 // --- Tarih yardımcıları ------------------------------------------------------
@@ -423,6 +454,110 @@ async function iceDaily(
 
 // --- Veri ----------------------------------------------------------------------
 
+// --- Resmi değerler ------------------------------------------------------------
+
+export function listOfficialValues(): OfficialValue[] {
+  return getDb().prepare("SELECT tarih, yakit, deger FROM official_values ORDER BY tarih ASC").all() as OfficialValue[];
+}
+
+export function saveOfficialValue(tarih: string, yakit: Fuel, deger: number): void {
+  getDb()
+    .prepare("INSERT OR REPLACE INTO official_values (tarih, yakit, deger, created_at) VALUES (?, ?, ?, ?)")
+    .run(tarih, yakit, deger, Date.now());
+}
+
+export function deleteOfficialValue(tarih: string): void {
+  getDb().prepare("DELETE FROM official_values WHERE tarih = ?").run(tarih);
+}
+
+// Dağıtıcı mesajından değerleri çıkarır ("BENZİN DEĞERİ : (+) 2,45"). Mesajın günü: "11.11.2026
+// tarihinde … beklenmemektedir" ya da "10.11.2026 SALI gününde … beklenmiyor"; ikisi de yoksa
+// bugün. ("12.11.2026 PERŞEMBE gününden geçerli" yürürlük günüdür, mesaj günü değil.) Birden
+// çok mesaj birlikte yapıştırılabilir.
+export function parseOfficialMessages(
+  text: string,
+  today = isoLocal(new Date())
+): { tarih: string; benzin?: number; motorin?: number }[] {
+  const norm = text
+    .replace(/[*_]/g, "")
+    .toLocaleUpperCase("tr")
+    .replace(/İ/g, "I")
+    .replace(/Ğ/g, "G")
+    .replace(/Ü/g, "U");
+  const value = (part: string, ad: string): number | undefined => {
+    const m = part.match(new RegExp(`${ad}\\s+DEGERI\\s*:?\\s*\\(?\\s*([+\\-−–])?\\s*\\)?\\s*(\\d+(?:[.,]\\d+)?)`));
+    if (!m) return undefined;
+    const n = Number(m[2].replace(",", "."));
+    return Number.isFinite(n) ? (m[1] && m[1] !== "+" ? -n : n) : undefined;
+  };
+  const date = (part: string): string => {
+    const m =
+      part.match(/(\d{2})\.(\d{2})\.(\d{4})\s+TARIHINDE/) ?? part.match(/(\d{2})\.(\d{2})\.(\d{4})\s+\S+\s+GUNUNDE(?!N)/);
+    const iso = m ? `${m[3]}-${m[2]}-${m[1]}` : today;
+    return iso > addDays(today, 1) || iso < addDays(today, -90) ? today : iso;
+  };
+  // Her mesaj "MOTORIN DEGERI" satırıyla biter; yapıştırılan metin buradan bölünür.
+  const out: { tarih: string; benzin?: number; motorin?: number }[] = [];
+  for (const part of norm.split(/(?<=MOTORIN\s+DEGERI[^\n]*)\n/)) {
+    const benzin = value(part, "BENZIN");
+    const motorin = value(part, "MOTORIN");
+    if (benzin == null && motorin == null) continue;
+    out.push({ tarih: date(part), benzin, motorin });
+  }
+  return out;
+}
+
+// Mesajı kaydeder; Telegram'a/portala dönecek kısa özeti üretir.
+export function recordOfficialMessage(text: string): { saved: number; reply: string } {
+  const msgs = parseOfficialMessages(text);
+  if (msgs.length === 0) {
+    return { saved: 0, reply: "Mesajda “BENZİN DEĞERİ / MOTORİN DEĞERİ” satırı bulunamadı." };
+  }
+  for (const m of msgs) {
+    if (m.benzin != null) saveOfficialValue(m.tarih, "benzin", m.benzin);
+    if (m.motorin != null) saveOfficialValue(m.tarih, "motorin", m.motorin);
+  }
+  const calc = computeForecast();
+  const lines = msgs.map((m) => {
+    const parts = FUELS.map((f) => {
+      const v = m[f.key];
+      if (v == null) return null;
+      const c = calc[f.key].resmi.find((r) => r.tarih === m.tarih);
+      const tahmin = c ? ` (bizim tahmin ${fmtSigned(c.tahmin)})` : "";
+      return `${f.label.toLocaleLowerCase("tr")} ${fmtSigned(v)}${tahmin}`;
+    }).filter(Boolean);
+    return `• ${fmtDay(m.tarih)}: ${parts.join(" · ")}`;
+  });
+  return {
+    saved: msgs.length,
+    reply: [`✅ <b>Resmi değer kaydedildi</b>`, ...lines, "Akşamki tahmin bu değerin üzerine kurulacak."].join("\n"),
+  };
+}
+
+// Kasım 2026'da kullanıcının ilettiği dağıtıcı mesajları (ilk kurulumda bir kez eklenir).
+const OFFICIAL_SEED: [string, number, number][] = [
+  // mesaj günü, benzin, motorin
+  ["2026-10-27", 2.6, 1.15],
+  ["2026-10-28", 2.45, 1.2],
+  ["2026-10-29", 2.85, 1.7],
+  ["2026-11-04", -2.9, -0.9],
+  ["2026-11-06", -2.1, -3.6],
+  ["2026-11-09", -1.5, 0.2],
+  ["2026-11-10", -2.5, -0.9],
+  ["2026-11-11", -3.75, -2.35],
+];
+function seedOfficialValues(): void {
+  if (getSetting("ff_official_seed") === "1") return;
+  const stmt = getDb().prepare(
+    "INSERT OR IGNORE INTO official_values (tarih, yakit, deger, created_at) VALUES (?, ?, ?, ?)"
+  );
+  for (const [tarih, benzin, motorin] of OFFICIAL_SEED) {
+    stmt.run(tarih, "benzin", benzin, Date.now());
+    stmt.run(tarih, "motorin", motorin, Date.now());
+  }
+  setSetting("ff_official_seed", "1");
+}
+
 export function listPrices(): PriceRow[] {
   return getDb().prepare("SELECT * FROM market_prices ORDER BY tarih ASC").all() as PriceRow[];
 }
@@ -456,7 +591,6 @@ export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
   const rows = getDb()
     .prepare("SELECT tarih, yakit, fiyat FROM pump_prices ORDER BY yakit, tarih")
     .all() as { tarih: string; yakit: Fuel; fiyat: number }[];
-  const ignored = new Set(cfg.yoksay);
   const out: PumpChange[] = [];
   const prev: Partial<Record<Fuel, number>> = {};
   for (const r of rows) {
@@ -468,10 +602,24 @@ export function getPumpChanges(cfg = getForecastConfig()): PumpChange[] {
         eski: p,
         yeni: r.fiyat,
         fark: r.fiyat - p,
-        ignored: ignored.has(`${r.tarih}|${r.yakit}`),
+        ignored: false,
+        otv: false,
       });
     }
     prev[r.yakit] = r.fiyat;
+  }
+  // ÖTV artışı piyasa hareketi değildir, baz sayılmaz: ayın 1'inde iki yakıta birden gelen zam
+  // ÖTV kabul edilir (1 Ekim ve 1 Kasım 2026: motorin +3,6, benzin +4,1). Resmi motorin değeri
+  // 1 Kasım'da sıfırlanmadan devam etti. Elle "baz say" işaretlenirse sayılır.
+  const yoksay = new Set(cfg.yoksay);
+  const say = new Set(cfg.say);
+  for (const c of out) {
+    const key = `${c.tarih}|${c.yakit}`;
+    c.otv =
+      c.tarih.endsWith("-01") &&
+      c.fark > 0 &&
+      out.some((o) => o.tarih === c.tarih && o.yakit !== c.yakit && o.fark > 0);
+    c.ignored = yoksay.has(key) || (c.otv && !say.has(key));
   }
   return out.sort((a, b) => a.tarih.localeCompare(b.tarih));
 }
@@ -491,7 +639,15 @@ export async function refreshMarket(
       .prepare("SELECT COUNT(*) AS n FROM market_prices WHERE tarih >= ? AND (ice IS NULL OR med IS NULL)")
       .get(addDays(latest, -BACKFILL_DAYS)) as { n: number }
   ).n;
-  const days = businessDays(addDays(latest, count < 5 || missing > 3 ? -BACKFILL_DAYS : -14), latest);
+  // Motorin kaynağı değiştiyse (Kuzey Avrupa → Akdeniz) kayıtlı tüm günler yeni kaynaktan
+  // yeniden yazılır; ortalama ve baz aynı seriden hesaplansın.
+  const motorinFix = getSetting("ff_motorin_source") !== MOTORIN_SOURCE;
+  const backfillFrom = addDays(latest, -BACKFILL_DAYS);
+  const oldest = (db.prepare("SELECT MIN(tarih) AS t FROM market_prices").get() as { t: string | null }).t;
+  const from = motorinFix
+    ? [oldest ?? backfillFrom, backfillFrom].sort()[0]
+    : addDays(latest, count < 5 || missing > 3 ? -BACKFILL_DAYS : -14);
+  const days = businessDays(from, latest);
 
   const errors: string[] = [];
   const fetchIce = async (label: string, product: IceProduct) => {
@@ -519,11 +675,16 @@ export async function refreshMarket(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const added: string[] = [];
+  const rewriteMotorin = motorinFix && fuelData[0] != null;
   for (const d of days) {
     const prev = existing.get(d);
+    if (!prev && d < backfillFrom) continue; // eski günler yalnız kayıtlıysa güncellenir
     const vals = FUELS.map((f, i) => {
-      const keep = prev && prev[f.col] != null ? { v: prev[f.col] as number, k: prev[f.kcol] as string | null } : null;
       const got = fuelData[i];
+      // Kaynak değişiminde ICE'ın verdiği günlerde eski motorin değeri tutulmaz.
+      const rewrite = rewriteMotorin && f.key === "motorin" && got!.prices.has(d);
+      const keep =
+        !rewrite && prev && prev[f.col] != null ? { v: prev[f.col] as number, k: prev[f.kcol] as string | null } : null;
       const v = got?.prices.get(d);
       return v != null && (!keep || keep.k === got!.kontrat) ? { v, k: got!.kontrat } : keep;
     });
@@ -547,6 +708,7 @@ export async function refreshMarket(
     if (!prev) added.push(d);
   }
   if (brentFix) setSetting("ff_brent_source", "ice");
+  if (rewriteMotorin) setSetting("ff_motorin_source", MOTORIN_SOURCE);
   return { added, latest, errors };
 }
 
@@ -565,7 +727,13 @@ function findLastIndex<T>(arr: T[], fn: (x: T) => boolean): number {
   return -1;
 }
 
-function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg: ForecastConfig): FuelCalc {
+function buildFuel(
+  fuel: Fuel,
+  prices: PriceRow[],
+  allChanges: PumpChange[],
+  officials: OfficialValue[],
+  cfg: ForecastConfig
+): FuelCalc {
   const meta = FUELS.find((f) => f.key === fuel)!;
   const n = Math.max(1, Math.round(fuel === "motorin" ? cfg.ortalamaMotorin : cfg.ortalamaBenzin));
   const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
@@ -587,35 +755,52 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
   });
 
   const changes = allChanges.filter((c) => c.yakit === fuel && !c.ignored);
-  const rows: FuelRow[] = pts.map((p) => {
-    const ch = changes.filter((c) => c.tarih <= p.tarih).pop() ?? null;
-    // Baz: değişiklikten bir gün önceki kapanış (değişiklik gününden önceki son kapanış).
-    // Rafineri yeni fiyatı en son fiyat seviyesine göre belirler; ortalama alınca hızlı
-    // hareketlerde baz geride kalıyordu (10 Ekim'de +6,40 TL'lik zam bunu gösterdi).
-    let j = ch ? findLastIndex(pts, (x) => x.tarih < ch.tarih) : -1;
-    let base: number;
+  // Resmi değer, mesaj gününden önceki son kapanışa (i) aittir.
+  const anchors = officials
+    .filter((o) => o.yakit === fuel)
+    .map((o) => ({ ...o, i: findLastIndex(pts, (x) => x.tarih < o.tarih) }))
+    .filter((a) => a.i >= 0);
+
+  // i. kapanıştaki okuma. `before` verilirse yalnız o günden önceki resmi değerler kullanılır
+  // (resmi değer gelmeden önceki akşamın tahmini).
+  const read = (i: number, before?: string) => {
+    const p = pts[i];
+    // Değişiklik yürürlükten bir gün önce 16:00'da, ondan önceki kapanışa göre açıklanır:
+    // ilan gününden itibaren okuma yeni baza göredir.
+    const ch = changes.filter((c) => addDays(c.tarih, -1) <= p.tarih).pop() ?? null;
+    const ilan = ch ? addDays(ch.tarih, -1) : "";
+    // Baz: karar günündeki ortalama (ilan gününden önceki son kapanış).
+    let j = ch ? findLastIndex(pts, (x) => x.tarih < ilan) : -1;
     let calibrating = false;
-    if (j >= 0) {
-      base = pts[j].c;
-    } else {
-      j = ch ? pts.findIndex((x) => x.tarih >= ch.tarih) : 0;
-      base = pts[j].c;
+    if (j < 0) {
+      j = ch ? pts.findIndex((x) => x.tarih >= ilan) : 0;
       calibrating = true;
     }
-    const pct = (p.avg / base - 1) * 100;
+    const model = (p.avg / pts[j].avg - 1) * 100;
+    // Son pompa değişikliğinden önce gelen resmi değerler eski baza aittir, kullanılmaz.
+    const a =
+      anchors.filter((x) => x.i <= i && (!ch || x.tarih >= ch.tarih) && (!before || x.tarih < before)).pop() ?? null;
+    const pct = a ? a.deger + (p.avg / pts[a.i].avg - 1) * 100 : model;
+    return { ch, j, calibrating, model, a, pct };
+  };
+
+  const rows: FuelRow[] = pts.map((p, i) => {
+    const r = read(i);
     const perLitre = (p.raw * p.usd) / meta.litrePerTon; // TL/litre ürün maliyeti
-    const tl = (pct / 100) * perLitre * 1.2 * kats * (1 - cfg.eselPay / 100);
+    const tl = (r.pct / 100) * perLitre * 1.2 * kats * (1 - cfg.eselPay / 100);
     return {
       tarih: p.tarih,
       raw: p.raw,
       kontrat: p.kontrat,
       usd: p.usd,
-      pct,
+      pct: r.pct,
+      model: r.model,
+      anchor: r.a ? { tarih: r.a.tarih, deger: r.a.deger } : null,
       tl,
-      level: levelOf(pct, cfg.esikPct),
-      change: ch,
-      baseTarih: pts[j].tarih,
-      calibrating,
+      level: levelOf(r.pct, cfg.esikPct),
+      change: r.ch,
+      baseTarih: pts[r.j].tarih,
+      calibrating: r.calibrating,
     };
   });
 
@@ -625,20 +810,28 @@ function buildFuel(fuel: Fuel, prices: PriceRow[], allChanges: PumpChange[], cfg
     rows,
     latest: rows[rows.length - 1] ?? null,
     lastChange: changes[changes.length - 1] ?? null,
-    // Her değişiklik için: değişiklikten önceki son kapanışta modelin söylediği.
+    // Her değişiklik için: karar günü kapanışında (ilan gününden önce) modelin söylediği.
     changes: own.map((c) => {
-      const i = findLastIndex(rows, (r) => r.tarih < c.tarih);
+      const i = findLastIndex(rows, (r) => r.tarih < addDays(c.tarih, -1));
       return { ...c, estimate: i >= 0 ? rows[i] : null };
     }),
+    resmi: anchors.map((a) => ({
+      tarih: a.tarih,
+      yakit: fuel,
+      deger: a.deger,
+      veriTarih: pts[a.i].tarih,
+      tahmin: read(a.i, a.tarih).pct,
+    })),
   };
 }
 
 export function computeForecast(cfg = getForecastConfig()): Record<Fuel, FuelCalc> {
   const prices = listPrices();
   const changes = getPumpChanges(cfg);
+  const officials = listOfficialValues();
   return {
-    motorin: buildFuel("motorin", prices, changes, cfg),
-    benzin: buildFuel("benzin", prices, changes, cfg),
+    motorin: buildFuel("motorin", prices, changes, officials, cfg),
+    benzin: buildFuel("benzin", prices, changes, officials, cfg),
   };
 }
 
@@ -668,7 +861,10 @@ export function buildStatusText(cfg = getForecastConfig()): string {
     if (r?.level === "indirim")
       lines.push(`🟢 <b>${f.label.toLocaleUpperCase("tr")}E İNDİRİM BEKLENİYOR</b> — alımı birkaç gün erteleyebilirsiniz.`);
   }
-  if (lines.length) lines.push("");
+  if (lines.length) {
+    lines.push("Değişiklik genelde ertesi iş günü 16:00'da açıklanır, gece yarısı pompaya yansır.");
+    lines.push("");
+  }
 
   lines.push(`📈 <b>Zam/İndirim Tahmini</b> · ${fmtDay(tarih)} Avrupa kapanışı`);
   for (const f of FUELS) {
@@ -682,6 +878,11 @@ export function buildStatusText(cfg = getForecastConfig()): string {
       `${f.icon} <b>${f.label}</b>: ${fmtPct(r.pct)} (eşik %${fmtNum(cfg.esikPct, 1)}) · ~${fmtSigned(r.tl)} TL/lt${stale}`
     );
     lines.push(`   ${LEVEL_TEXT[r.level]}`);
+    lines.push(
+      r.anchor
+        ? `   Resmi değer ${fmtDay(r.anchor.tarih)}: ${fmtSigned(r.anchor.deger)} → sonraki kapanışlarla ${fmtSigned(r.pct)}`
+        : `   Bu dönem için resmi değer girilmedi; yalnız model hesabı.`
+    );
   }
   const row = listPrices().find((p) => p.tarih === tarih);
   if (row) {
@@ -700,7 +901,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
     const r = calc[f.key].latest;
     if (r?.calibrating)
       lines.push(
-        `ℹ️ ${f.label}: son değişiklikten önceki piyasa verisi yok; sapma ${fmtDay(r.baseTarih)} kapanışından hesaplanıyor.`
+        `ℹ️ ${f.label}: son değişiklikten önceki piyasa verisi yok; sapma ${fmtDay(r.baseTarih)} ortalamasından hesaplanıyor.`
       );
   }
   return lines.join("\n");
@@ -820,10 +1021,11 @@ async function tick(): Promise<void> {
 // 45 günün piyasa verisi.
 export async function bootstrapForecast(): Promise<void> {
   const db = getDb();
+  seedOfficialValues();
   const pumps = (db.prepare("SELECT COUNT(*) AS n FROM pump_prices").get() as { n: number }).n;
   if (pumps === 0 || getSetting("ff_pump_source") !== PUMP_SOURCE) await refreshPumpPrices(420);
   const prices = (db.prepare("SELECT COUNT(*) AS n FROM market_prices").get() as { n: number }).n;
-  if (prices < 5) await refreshMarket();
+  if (prices < 5 || getSetting("ff_motorin_source") !== MOTORIN_SOURCE) await refreshMarket();
 }
 
 const g = globalThis as unknown as { __fuelForecastTimer?: ReturnType<typeof setInterval> };

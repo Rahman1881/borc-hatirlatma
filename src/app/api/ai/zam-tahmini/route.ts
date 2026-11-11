@@ -3,12 +3,15 @@ import {
   bootstrapForecast,
   buildStatusText,
   computeForecast,
+  deleteOfficialValue,
   fetchTimeTr,
   getForecastConfig,
   listPrices,
+  recordOfficialMessage,
   refreshMarket,
   refreshPumpPrices,
   saveForecastConfig,
+  saveOfficialValue,
   setChangeIgnored,
   type Fuel,
 } from "@/lib/fuel-forecast";
@@ -17,6 +20,10 @@ import {
 //  GET  → durum, piyasa verisi, gerçekleşen değişiklikler, ayarlar
 //  POST { action: "refresh" } → ICE + Petrol Ofisi'nden şimdi çek (hatalar `errors`)
 //       { action: "config", ...ayarlar } | { action: "ignore", tarih, yakit, ignored }
+//       { action: "resmi", mesaj } → dağıtıcı mesajından resmi değerleri kaydet
+//       { action: "resmi", tarih, benzin?, motorin? } → elle giriş | { action: "resmiSil", tarih }
+
+type Check = { deger: number; tahmin: number };
 
 function snapshot() {
   const config = getForecastConfig();
@@ -33,8 +40,18 @@ function snapshot() {
   const changes = [...calc.motorin.changes, ...calc.benzin.changes]
     .sort((x, y) => y.tarih.localeCompare(x.tarih))
     .slice(0, 30);
+  // Resmi değerler (yeni → eski): mesaj günü başına iki yakıt, yanında önceki akşamın tahmini.
+  const resmi = new Map<string, { tarih: string; veriTarih: string; benzin: Check | null; motorin: Check | null }>();
+  for (const f of ["motorin", "benzin"] as const) {
+    for (const r of calc[f].resmi) {
+      const row = resmi.get(r.tarih) ?? { tarih: r.tarih, veriTarih: r.veriTarih, benzin: null, motorin: null };
+      row[f] = { deger: r.deger, tahmin: r.tahmin };
+      resmi.set(r.tarih, row);
+    }
+  }
   return {
     config,
+    resmi: [...resmi.values()].sort((x, y) => y.tarih.localeCompare(x.tarih)).slice(0, 30),
     fetchTime: fetchTimeTr(),
     lastFetched: prices.reduce((a, p) => Math.max(a, p.fetched_at), 0) || null,
     latest: { motorin: calc.motorin.latest, benzin: calc.benzin.latest },
@@ -71,6 +88,34 @@ export async function POST(req: NextRequest) {
     if (body.action === "ignore") {
       const yakit = body.yakit === "benzin" ? "benzin" : "motorin";
       setChangeIgnored(String(body.tarih || ""), yakit, Boolean(body.ignored));
+      return NextResponse.json(snapshot());
+    }
+    if (body.action === "resmi") {
+      if (typeof body.mesaj === "string" && body.mesaj.trim()) {
+        const { saved, reply } = recordOfficialMessage(body.mesaj);
+        if (saved === 0) return NextResponse.json({ error: reply }, { status: 400 });
+        return NextResponse.json(snapshot());
+      }
+      const tarih = String(body.tarih || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(tarih)) {
+        return NextResponse.json({ error: "Tarih geçersiz." }, { status: 400 });
+      }
+      let saved = 0;
+      for (const f of ["benzin", "motorin"] as const) {
+        const raw = body[f];
+        if (raw == null || raw === "") continue;
+        const n = Number(String(raw).replace(",", "."));
+        if (!Number.isFinite(n) || Math.abs(n) > 30) {
+          return NextResponse.json({ error: "Değer geçersiz." }, { status: 400 });
+        }
+        saveOfficialValue(tarih, f, n);
+        saved++;
+      }
+      if (saved === 0) return NextResponse.json({ error: "En az bir değer girin." }, { status: 400 });
+      return NextResponse.json(snapshot());
+    }
+    if (body.action === "resmiSil") {
+      deleteOfficialValue(String(body.tarih || ""));
       return NextResponse.json(snapshot());
     }
     return NextResponse.json({ error: "Bilinmeyen işlem." }, { status: 400 });

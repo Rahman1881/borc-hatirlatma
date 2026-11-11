@@ -139,7 +139,7 @@ function initDb(db: Database.Database) {
     );
 
     -- Zam/İndirim Tahmini (src/lib/fuel-forecast.ts). market_prices: her iş günü ICE
-    -- kapanışları (ice = Avrupa motorini, med = Akdeniz benzini; sütunlar sonradan eklenir) ve
+    -- kapanışları (ice = Akdeniz motorini, med = Akdeniz benzini; sütunlar sonradan eklenir) ve
     -- TCMB kuru; ho/rb eski Yahoo verisidir. Kontrat değişince seri zincirlenir. pump_prices: Petrol Ofisi Serdivan arşivinden
     -- günlük pompa fiyatları (gerçekleşen zam/indirimler buradan çıkarılır).
     CREATE TABLE IF NOT EXISTS market_prices (
@@ -156,6 +156,14 @@ function initDb(db: Database.Database) {
       tarih TEXT NOT NULL,
       yakit TEXT NOT NULL,        -- motorin | benzin
       fiyat REAL NOT NULL,
+      PRIMARY KEY (tarih, yakit)
+    );
+    -- Dağıtıcının günlük "BENZİN/MOTORİN DEĞERİ" mesajı; akşam tahmini bunun üzerine kurulur.
+    CREATE TABLE IF NOT EXISTS official_values (
+      tarih TEXT NOT NULL,        -- mesajın günü; değer bir önceki kapanışa kadarki veriyledir
+      yakit TEXT NOT NULL,        -- motorin | benzin
+      deger REAL NOT NULL,
+      created_at INTEGER NOT NULL,
       PRIMARY KEY (tarih, yakit)
     );
 

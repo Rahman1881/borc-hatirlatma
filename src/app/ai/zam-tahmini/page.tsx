@@ -2,18 +2,28 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Panel, Pill } from "@/components/ai/ui";
-import { TrendingUp, RefreshCw, Save, AlertTriangle, Send, Settings2 } from "lucide-react";
+import { TrendingUp, RefreshCw, Save, AlertTriangle, Send, Settings2, ClipboardPaste, Trash2 } from "lucide-react";
 
 type Fuel = "motorin" | "benzin";
 type Level = "zam" | "zam_yakin" | "notr" | "indirim_yakin" | "indirim";
 
-type PumpChange = { tarih: string; yakit: Fuel; eski: number; yeni: number; fark: number; ignored: boolean };
+type PumpChange = {
+  tarih: string;
+  yakit: Fuel;
+  eski: number;
+  yeni: number;
+  fark: number;
+  ignored: boolean;
+  otv: boolean;
+};
 type FuelRow = {
   tarih: string;
   raw: number;
   kontrat: string;
   usd: number;
   pct: number;
+  model: number;
+  anchor: { tarih: string; deger: number } | null;
   tl: number;
   level: Level;
   change: PumpChange | null;
@@ -42,8 +52,11 @@ type PriceRow = {
   motorin: FuelRow | null;
   benzin: FuelRow | null;
 };
+type Check = { deger: number; tahmin: number };
+type OfficialRow = { tarih: string; veriTarih: string; benzin: Check | null; motorin: Check | null };
 type Data = {
   config: Config;
+  resmi: OfficialRow[];
   fetchTime: string;
   lastFetched: number | null;
   latest: Record<Fuel, FuelRow | null>;
@@ -56,11 +69,11 @@ type Data = {
 };
 
 const FUELS: { key: Fuel; label: string; source: string }[] = [
-  { key: "motorin", label: "Motorin", source: "Avrupa motorin" },
+  { key: "motorin", label: "Motorin", source: "Akdeniz motorin" },
   { key: "benzin", label: "Benzin", source: "Akdeniz benzin" },
 ];
 
-// Kartta kaynak ve kontrat: "Avrupa motorin (ICE Nov26) 1.492,00 $/ton".
+// Kartta kaynak ve kontrat: "Akdeniz motorin (ICE Dec26) 1.221,50 $/ton".
 function sourceText(f: (typeof FUELS)[number], r: FuelRow): string {
   return `${f.source} (${r.kontrat}) ${num(r.raw, 2)} $/ton`;
 }
@@ -147,6 +160,7 @@ export default function ZamTahminiPage() {
   const [busy, setBusy] = useState(false);
   const [cfg, setCfg] = useState<Config | null>(null);
   const [showCfg, setShowCfg] = useState(false);
+  const [mesaj, setMesaj] = useState("");
 
   const apply = useCallback((d: Data) => {
     setData(d);
@@ -204,10 +218,11 @@ export default function ZamTahminiPage() {
           <div className="flex-1">
             <p className="text-sm font-semibold">Zam/İndirim Tahmini</p>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Pompa fiyatı, Avrupa ürün fiyatı × dolar kuruyla oluşur; son pompa değişikliğinden beri bu maliyet
-              eşiği aşınca zam ya da indirim gelir. Sistem her iş günü Avrupa kapanışında (saat ~{data.fetchTime})
-              ICE&apos;tan Avrupa motorin ve Akdeniz benzin fiyatlarını ve TCMB kurunu kendisi çeker, sapmayı hesaplar ve Telegram&apos;da
-              rapor alanlara bildirir. Tahmindir; resmi formül yayınlanmaz.
+              Pompa fiyatı, Akdeniz ürün fiyatı × dolar kuruyla oluşur; son pompa değişikliğinden beri bu maliyet
+              eşiği aşınca zam ya da indirim gelir. Sistem her iş günü Avrupa kapanışından sonra (saat ~{data.fetchTime})
+              ICE&apos;tan Akdeniz motorin ve benzin fiyatlarını ve TCMB kurunu kendisi çeker; dağıtıcıdan gelen son
+              resmi değerin üzerine o günden beri olan hareketi ekleyip ertesi günün değerini tahmin eder ve
+              Telegram&apos;da rapor alanlara bildirir. Değişiklik genelde ertesi iş günü 16:00&apos;da açıklanır.
             </p>
           </div>
           <label className="flex shrink-0 items-center gap-2 text-sm">
@@ -250,9 +265,14 @@ export default function ZamTahminiPage() {
                   </div>
                   <Gauge value={r.pct} esik={data.config.esikPct} />
                   <p className="mt-7 text-xs text-muted-foreground">
+                    {r.anchor
+                      ? `Resmi değer ${fmtDay(r.anchor.tarih)}: ${signed(r.anchor.deger)} · sonraki kapanışlarla ${signed(r.pct)} (yalnız model: ${signed(r.model)})`
+                      : `Bu dönem için resmi değer girilmedi; yalnız model hesabı (baz ${fmtDay(r.baseTarih)} ortalaması).`}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {ch
-                      ? `Son pompa değişikliği: ${fmtDay(ch.tarih)} (${signed(ch.fark)} TL) · baz ${fmtDay(r.baseTarih)} kapanışı`
-                      : `Henüz pompa değişikliği görülmedi · baz ${fmtDay(r.baseTarih)}`}
+                      ? `Son pompa değişikliği: ${fmtDay(ch.tarih)} (${signed(ch.fark)} TL)`
+                      : "Henüz pompa değişikliği görülmedi"}
                   </p>
                   {r.calibrating && (
                     <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600">
@@ -272,14 +292,106 @@ export default function ZamTahminiPage() {
         })}
       </div>
 
+      {/* Resmi değer */}
+      <Panel>
+        <p className="text-sm font-semibold">Resmi değer (dağıtıcının günlük mesajı)</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Gelen &quot;BENZİN DEĞERİ / MOTORİN DEĞERİ&quot; mesajını buraya yapıştırın ya da Telegram botuna iletin.
+          Akşamki tahmin bu değerin üzerine kurulur; değer girilmeyen günlerde son girilenden devam eder. Birden
+          çok mesaj birlikte yapıştırılabilir.
+        </p>
+        <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-start">
+          <textarea
+            value={mesaj}
+            onChange={(e) => setMesaj(e.target.value)}
+            rows={3}
+            placeholder={"10.11.2026 SALI gününde Benzin ve Motorin gruplarında fiyat değişikliği beklenmiyor.\nBENZİN DEĞERİ : (-) 2,50\nMOTORİN DEĞERİ : (-) 0,90"}
+            className="min-h-20 flex-1 rounded-lg border bg-muted/50 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          <button
+            onClick={() =>
+              post({ action: "resmi", mesaj }).then((d) => {
+                if (!d) return;
+                setMesaj("");
+                setMsg({ ok: true, text: "Resmi değer kaydedildi." });
+              })
+            }
+            disabled={busy || !mesaj.trim()}
+            className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            <ClipboardPaste className="h-4 w-4" /> Kaydet
+          </button>
+        </div>
+        {data.resmi.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Mesaj günü</th>
+                  <th className="py-2 pr-3 font-medium">Benzin resmi</th>
+                  <th className="py-2 pr-3 font-medium">Bizim tahmin</th>
+                  <th className="py-2 pr-3 font-medium">Motorin resmi</th>
+                  <th className="py-2 pr-3 font-medium">Bizim tahmin</th>
+                  <th className="w-8" />
+                </tr>
+              </thead>
+              <tbody>
+                {data.resmi.map((r) => (
+                  <tr key={r.tarih} className="border-b last:border-0">
+                    <td className="py-2 pr-3">
+                      {fmtDay(r.tarih)}{" "}
+                      <span className="text-xs text-muted-foreground">({fmtDay(r.veriTarih)} kapanışı)</span>
+                    </td>
+                    {(["benzin", "motorin"] as const).map((f) => {
+                      const c = r[f];
+                      const fark = c ? c.tahmin - c.deger : 0;
+                      return [
+                        <td key={`${f}-r`} className="py-2 pr-3 font-medium">
+                          {c ? signed(c.deger) : "—"}
+                        </td>,
+                        <td key={`${f}-t`} className="py-2 pr-3">
+                          {c ? (
+                            <>
+                              {signed(c.tahmin)}{" "}
+                              <span className={Math.abs(fark) <= 0.5 ? "text-emerald-600" : "text-amber-600"}>
+                                ({signed(fark)})
+                              </span>
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </td>,
+                      ];
+                    })}
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => post({ action: "resmiSil", tarih: r.tarih })}
+                        disabled={busy}
+                        title="Sil"
+                        className="text-muted-foreground hover:text-red-600 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-2 text-xs text-muted-foreground">
+              &quot;Bizim tahmin&quot;: o resmi değer gelmeden önceki akşam sistemin söylediği; parantez içi farktır.
+            </p>
+          </div>
+        )}
+      </Panel>
+
       {/* Veri kaynağı */}
       <Panel>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold">Veri</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Hepsi ICE&apos;tan, önündeki ay kontratının günlük kapanışı: motorin ICE Low Sulphur Gasoil (Avrupa
-              motorini), benzin ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini), Brent ICE Brent.
+              Hepsi ICE&apos;tan, önündeki ay kontratının günlük kapanışı: motorin ICE ULSD 10ppm CIF Med (Platts
+              Akdeniz motorini), benzin ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini), Brent ICE Brent.
               Veri gelmezse yedek kaynak yok; o gün Telegram&apos;dan hata bildirilir. Kur: TCMB. Gerçekleşen
               değişiklikler: Petrol Ofisi Serdivan fiyat arşivi.
               {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
@@ -319,9 +431,9 @@ export default function ZamTahminiPage() {
       <Panel>
         <p className="text-sm font-semibold">Gerçekleşen pompa değişiklikleri (Petrol Ofisi Serdivan)</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Modelin değişiklikten önceki son kapanışta söylediğiyle karşılaştırma. 0,30 TL&apos;nin altındaki marj
-          oynamaları sayılmaz. ÖTV artışı gibi piyasa dışı değişiklikleri &quot;baz say&quot; işaretini kaldırarak
-          hariç tutun.
+          Sistemin karar günü kapanışında söylediğiyle karşılaştırma. 0,30 TL&apos;nin altındaki marj oynamaları
+          sayılmaz. Ayın 1&apos;inde iki yakıta birden gelen zam ÖTV kabul edilir ve baz sayılmaz; yanlışsa
+          &quot;baz say&quot; işaretiyle düzeltin.
         </p>
         {data.changes.length === 0 ? (
           <p className="mt-3 text-sm text-muted-foreground">Henüz değişiklik kaydı yok.</p>
@@ -343,7 +455,10 @@ export default function ZamTahminiPage() {
                   return (
                     <tr key={`${c.tarih}-${c.yakit}`} className={`border-b last:border-0 ${c.ignored ? "opacity-50" : ""}`}>
                       <td className="py-2 pr-3">{fmtDay(c.tarih)}</td>
-                      <td className="py-2 pr-3">{c.yakit === "motorin" ? "Motorin" : "Benzin"}</td>
+                      <td className="py-2 pr-3">
+                        {c.yakit === "motorin" ? "Motorin" : "Benzin"}
+                        {c.otv && <span className="ml-1.5 text-xs text-muted-foreground">ÖTV</span>}
+                      </td>
                       <td className={`py-2 pr-3 font-medium ${c.fark > 0 ? "text-red-600" : "text-emerald-600"}`}>
                         {signed(c.fark)} TL{" "}
                         <span className="font-normal text-muted-foreground">
@@ -394,12 +509,12 @@ export default function ZamTahminiPage() {
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">Gün</th>
-                  <th className="py-2 pr-3 font-medium">Avrupa motorin $/t</th>
+                  <th className="py-2 pr-3 font-medium">Akdeniz motorin $/t</th>
                   <th className="py-2 pr-3 font-medium">Akdeniz benzin $/t</th>
                   <th className="py-2 pr-3 font-medium">Brent $</th>
                   <th className="py-2 pr-3 font-medium">Kur</th>
-                  <th className="py-2 pr-3 font-medium">Motorin sapma</th>
-                  <th className="py-2 font-medium">Benzin sapma</th>
+                  <th className="py-2 pr-3 font-medium">Motorin tahmin</th>
+                  <th className="py-2 font-medium">Benzin tahmin</th>
                 </tr>
               </thead>
               <tbody>
@@ -469,9 +584,9 @@ export default function ZamTahminiPage() {
               Her gün durum gönder (kapalıysa yalnız &quot;yaklaşıyor / bekleniyor&quot; durumu değişince)
             </label>
             <p className="text-xs text-muted-foreground">
-              Resmi hesaptaki gibi bugünkü değer son 5 kapanışın ortalamasıdır; sapma, son pompa
-              değişikliğinden bir gün önceki Avrupa kapanışına göre hesaplanır. Bu ikili 27 Ekim&apos;deki resmi
-              &quot;değer&quot; mesajını benzinde birebir tutturdu.
+              Resmi hesaptaki gibi bugünkü değer son 5 kapanışın ortalamasıdır. Resmi değer girildiyse tahmin
+              onun üzerine, o günden beri ortalamadaki değişim eklenerek bulunur; girilmediyse ortalama, son pompa
+              değişikliğinin karar günündeki ortalamayla kıyaslanır.
               Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır (motorin ~1,3, benzin ~0,95). Eşel mobil
               uygulanırsa, zammın devletin ÖTV&apos;den karşıladığı payı girin.
             </p>

@@ -239,6 +239,23 @@ async function answerMarket(chatId) {
   await sendMessage(chatId, reply, "HTML");
 }
 
+// Dağıtıcının günlük "BENZİN DEĞERİ / MOTORİN DEĞERİ" mesajı bota iletilirse resmi değer
+// olarak kaydedilir; akşamki zam tahmini bu değerin üzerine kurulur.
+function looksLikeOfficialValue(text) {
+  return /(benz[iİı]n|motor[iİı]n)\s+de[ğg]er[iİı]\s*:/i.test(text);
+}
+
+async function answerOfficialValue(chatId, text) {
+  let reply;
+  try {
+    const d = await apiPost("/api/ai/telegram/piyasa", { mesaj: text });
+    reply = d.text || "Resmi değer kaydedilemedi.";
+  } catch {
+    reply = "Resmi değer kaydedilemedi (sunucuya ulaşılamadı).";
+  }
+  await sendMessage(chatId, reply, "HTML");
+}
+
 // Mesaj tek başına bir plaka mı? ("54 ABC 123", "54abc123", "54-ABC-123")
 // Yalnız harf/rakam/boşluk/tireden oluşan kısa metinler denenir ki normal
 // sorular yanlışlıkla plaka sanılmasın.
@@ -278,6 +295,7 @@ Müşterinin yeni mi olduğunu, en son ne zaman geldiğini hemen görürsünüz.
 
 📈 <b>Zam/İndirim Tahmini:</b> Her iş günü akşam (~18:45, kışın ~19:45) otomatik gelir.
 Güncel durum için /piyasa
+Dağıtıcıdan gelen "BENZİN DEĞERİ / MOTORİN DEĞERİ" mesajını buraya iletirseniz tahmin onun üzerine kurulur.
 
 Komutlar:
 /rapor — Günlük satış raporu
@@ -348,6 +366,10 @@ async function handleMessage(msg) {
   }
   if (lower === "/yakin" || lower === "/yakın" || lower === "yakin" || lower === "yakın") {
     await requestLocation(chatId);
+    return;
+  }
+  if (looksLikeOfficialValue(text)) {
+    await answerOfficialValue(chatId, text);
     return;
   }
   if (looksLikeMarketCommand(lower)) {
