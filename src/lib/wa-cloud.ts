@@ -225,6 +225,39 @@ export async function connectWithToken(input: { token: string; wabaId: string })
   return getStatus();
 }
 
+// Teşhis: numaranın Meta'daki durumu, WABA'ya abone uygulamalar ve son webhook'lar.
+// Coexistence numarasında is_on_biz_app=true ve platform_type=CLOUD_API beklenir.
+export async function diagnose(): Promise<Record<string, unknown>> {
+  const token = getSetting(KEYS.accessToken);
+  const wabaId = getSetting(KEYS.wabaId);
+  const phoneId = getSetting(KEYS.phoneNumberId);
+  if (!token || !wabaId || !phoneId) throw new Error("WhatsApp henüz bağlanmadı.");
+
+  const safe = async (fn: () => Promise<unknown>) => {
+    try {
+      return await fn();
+    } catch (err) {
+      return { hata: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  const numara = await safe(() =>
+    graph("GET", phoneId, {
+      token,
+      query: {
+        fields:
+          "display_phone_number,verified_name,status,platform_type,is_on_biz_app,code_verification_status,name_status,quality_rating,account_mode",
+      },
+    })
+  );
+  const aboneler = await safe(() => graph("GET", `${wabaId}/subscribed_apps`, { token }));
+  const sonBildirimler = (
+    getDb()
+      .prepare("SELECT received_at, field, payload FROM wa_cloud_webhook_log ORDER BY id DESC LIMIT 5")
+      .all() as { received_at: string; field: string; payload: string }[]
+  ).map((r) => ({ zaman: r.received_at, alan: r.field, ozet: r.payload.slice(0, 300) }));
+  return { numara, aboneler, sonBildirimler };
+}
+
 // Bağlantının ikinci yarısı: uygulamayı WABA'nın webhook'larına abone eder (yoksa Meta
 // mesajları göndermez) ve geçmiş aktarımını başlatır. Erişim anahtarı kaydedildikten sonra
 // ayrı çalıştırılabilir; bu adım hata verirse Embedded Signup'ı baştan yapmak gerekmez.

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   completeSignup,
   connectWithToken,
+  diagnose,
   finishSetup,
   getStatus,
   saveAppSecret,
@@ -11,7 +12,7 @@ import {
 // anahtarı) hiçbir zaman cevapta dönmez.
 //
 // GET  -> durum
-// POST -> action: saveSecret | connect | connectToken | finish
+// POST -> action: saveSecret | connect | connectToken | finish | diagnose
 
 export async function GET() {
   try {
@@ -72,6 +73,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "WhatsApp hesap kodu yalnız rakamlardan oluşmalı." }, { status: 400 });
       }
       return NextResponse.json(await connectWithToken({ token, wabaId }));
+    }
+
+    if (action === "diagnose") {
+      return NextResponse.json(await diagnose());
     }
 
     // Bağlantı kuruldu ama webhook aboneliği / geçmiş aktarımı yarım kaldıysa.

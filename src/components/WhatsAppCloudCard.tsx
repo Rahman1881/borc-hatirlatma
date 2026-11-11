@@ -58,6 +58,7 @@ export default function WhatsAppCloudCard() {
   const [returnError, setReturnError] = useState("");
   const [manualToken, setManualToken] = useState("");
   const [manualWaba, setManualWaba] = useState("");
+  const [diag, setDiag] = useState("");
 
   const load = useCallback(() => {
     fetch("/api/whatsapp-cloud")
@@ -168,6 +169,24 @@ export default function WhatsAppCloudCard() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Bağlantı tamamlanamadı.");
       load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runDiagnose = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/whatsapp-cloud", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "diagnose" }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Durum okunamadı.");
+      setDiag(JSON.stringify(d, null, 2));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Durum okunamadı.");
     } finally {
       setBusy(false);
     }
@@ -301,6 +320,14 @@ export default function WhatsAppCloudCard() {
                 <span className="text-muted-foreground">Kayıtlı mesaj: </span>
                 {status.messageCount}
               </p>
+              <Button variant="outline" size="sm" className="mt-2 mr-2" onClick={runDiagnose} disabled={busy}>
+                Numara durumunu kontrol et
+              </Button>
+              {diag && (
+                <pre className="mt-2 max-h-96 overflow-auto rounded border bg-background p-2 text-xs whitespace-pre-wrap break-all">
+                  {diag}
+                </pre>
+              )}
               {syncFailed && (
                 <Button variant="outline" size="sm" className="mt-2" onClick={finish} disabled={busy}>
                   Kurulumu tamamla (webhook aboneliği + geçmiş aktarımı)
