@@ -20,6 +20,7 @@ type FuelRow = {
   tarih: string;
   raw: number;
   kontrat: string;
+  provisional: boolean;
   usd: number;
   pct: number;
   model: number;
@@ -253,7 +254,10 @@ export default function ZamTahminiPage() {
                       : "Henüz veri yok"}
                   </p>
                 </div>
-                {r && <Pill tone={LEVEL[r.level].tone}>{LEVEL[r.level].text}</Pill>}
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  {r && <Pill tone={LEVEL[r.level].tone}>{LEVEL[r.level].text}</Pill>}
+                  {r?.provisional && <Pill tone="warning">Ön tahmin</Pill>}
+                </div>
               </div>
               {r ? (
                 <>
@@ -392,8 +396,10 @@ export default function ZamTahminiPage() {
             <p className="mt-0.5 text-xs text-muted-foreground">
               Hepsi ICE&apos;tan, önündeki ay kontratının günlük kapanışı: motorin ICE ULSD 10ppm CIF Med (Platts
               Akdeniz motorini), benzin ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini), Brent ICE Brent.
-              Veri gelmezse yedek kaynak yok; o gün Telegram&apos;dan hata bildirilir. Kur: TCMB. Gerçekleşen
-              değişiklikler: Petrol Ofisi Serdivan fiyat arşivi.
+              ICE Akdeniz kapanışlarını gece geç saatte yayınladığı için akşamki değer ön tahmindir (motorin:
+              Kuzey Avrupa motorininin, benzin: Brent&apos;in gün içi hareketiyle); kesin kapanış ertesi sabah
+              yerine yazılır ve uyarı değişirse Telegram&apos;dan bildirilir. Kur: TCMB. Gerçekleşen değişiklikler:
+              Petrol Ofisi Serdivan fiyat arşivi.
               {data.lastFetched ? ` Son çekim: ${new Date(data.lastFetched).toLocaleString("tr-TR")}.` : ""}
             </p>
           </div>
@@ -524,10 +530,12 @@ export default function ZamTahminiPage() {
                     <td className="py-2 pr-3">
                       {q.ice != null ? num(q.ice, 2) : "—"}{" "}
                       <span className="text-xs text-muted-foreground">{kontratAd(q.ice_kontrat)}</span>
+                      {q.motorin?.provisional && <span className="ml-1 text-xs text-amber-600">ön</span>}
                     </td>
                     <td className="py-2 pr-3">
                       {q.med != null ? num(q.med, 2) : "—"}{" "}
                       <span className="text-xs text-muted-foreground">{kontratAd(q.med_kontrat)}</span>
+                      {q.benzin?.provisional && <span className="ml-1 text-xs text-amber-600">ön</span>}
                     </td>
                     <td className="py-2 pr-3">{q.brent != null ? num(q.brent, 1) : "—"}</td>
                     <td className="py-2 pr-3">{num(q.usd, 4)}</td>

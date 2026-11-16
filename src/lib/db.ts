@@ -375,6 +375,9 @@ function ensureMarketIceColumns(db: Database.Database): void {
     ["ice_kontrat", "TEXT"],
     ["med", "REAL"],
     ["med_kontrat", "TEXT"],
+    // 1: o günün değeri ön tahmin (Akdeniz kapanışı henüz yayınlanmadı)
+    ["ice_tahmini", "INTEGER"],
+    ["med_tahmini", "INTEGER"],
   ]) {
     if (cols.some((c) => c.name === name)) continue;
     try {

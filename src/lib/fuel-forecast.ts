@@ -20,8 +20,11 @@ import { isTelegramConfigured, listChats, sendMessage } from "@/lib/telegram";
 //  • Benzin: ICE Premium Unleaded 10ppm FOB Med (Platts Akdeniz benzini) — Türkiye'nin benzin bazı.
 //  • Brent (yalnız bilgi, hesaba girmez): ICE Brent.
 //  Her biri önündeki ay kontratının günlük kapanışı ($/ton, Brent $/varil). Akdeniz
-//  kontratlarında ekranda işlem olmadığı için günün değeri kapanış yayınlanınca gelir. Veri
-//  gelmezse yedek kaynak yoktur; o gün Telegram'dan hata bildirilir.
+//  kontratlarında ekranda işlem yoktur; kapanışları ICE gece geç saatte yayınlar (12 Kasım
+//  2026'da Londra 22:00'ye kadar gelmedi). Bu yüzden akşam tahmini ÖN TAHMİNLE yapılır: dünkü
+//  Akdeniz kapanışı × gün içi verisi olan vekilin bugünkü hareketi (motorin: ICE Low Sulphur
+//  Gasoil — aynı ay kontratında günlük sapma ~%0,2; benzin: ICE Brent — ~%0,8). Kesin kapanış
+//  ertesi sabah alınır, ön tahminin yerine yazılır; uyarı düzeyi değişirse yeniden bildirilir.
 //  • Kur: TCMB günlük dolar satış kuru.
 //  • Gerçekleşen değişiklikler: Petrol Ofisi'nin Serdivan fiyat arşivi (her gün); bugünün
 //    fiyatı arşive ertesi gün düştüğü için sabah güncel fiyat sayfasından eklenir.
@@ -70,10 +73,12 @@ export type PriceRow = {
   rb: number | null; // eski (Yahoo ABD benzin, artık yazılmıyor)
   rb_kontrat: string | null;
   brent: number | null; // $/varil (bilgi)
-  ice: number | null; // Avrupa motorini (ICE gasoil), $/ton
-  ice_kontrat: string | null; // ör. "ICE Nov26"
+  ice: number | null; // Akdeniz motorini (ICE CIF Med), $/ton
+  ice_kontrat: string | null; // ör. "ICE Dec26"
+  ice_tahmini: number | null; // 1: kapanış henüz yayınlanmadı, değer ön tahmin
   med: number | null; // Akdeniz benzini (ICE/Platts Med), $/ton
   med_kontrat: string | null;
+  med_tahmini: number | null;
   usd: number;
   fetched_at: number;
 };
@@ -92,6 +97,7 @@ export type FuelRow = {
   tarih: string;
   raw: number; // $/ton
   kontrat: string; // ör. "ICE Nov26"
+  provisional: boolean; // günün değeri ön tahmin (Akdeniz kapanışı henüz yayınlanmadı)
   usd: number;
   pct: number; // tahmin edilen değer (%): resmi değer varsa onun üzerine, yoksa model
   model: number; // yalnız model: 5 günlük ortalamanın karar günündeki ortalamaya göre sapması (%)
@@ -127,12 +133,16 @@ const ICE_MED_GASOLINE: IceProduct = {
   page: "6753555/Premium-Unleaded-Gasoline-10ppm-FOB-Med-Cargoes-Future",
 };
 const ICE_BRENT: IceProduct = { productId: 254, hubId: 403, page: "219/Brent-Crude-Futures" };
+// Yalnız akşam ön tahmini için (gün içi verisi var): Kuzey Avrupa motorini.
+const ICE_GASOIL: IceProduct = { productId: 5817, hubId: 9373, page: "34361119/Low-Sulphur-Gasoil-Futures" };
 
 const FUELS = [
   {
     key: "motorin",
     col: "ice",
     kcol: "ice_kontrat",
+    tcol: "ice_tahmini",
+    proxy: "gasoil",
     product: ICE_MED_DIESEL,
     litrePerTon: 1000 / 0.845,
     label: "Motorin",
@@ -143,6 +153,8 @@ const FUELS = [
     key: "benzin",
     col: "med",
     kcol: "med_kontrat",
+    tcol: "med_tahmini",
+    proxy: "brent",
     product: ICE_MED_GASOLINE,
     litrePerTon: 1000 / 0.745,
     label: "Benzin",
@@ -665,14 +677,38 @@ export async function refreshMarket(
   // Brent yalnız bilgi; kontrat değişince geçmiş günler yeniden yazılmasın diye yalnız son 3 iş
   // günü güncellenir (16:30 fiyatı → kesin kapanış). Yahoo'dan ICE'a geçişte bir kez düzeltilir.
   const brent = await fetchIce("Brent (ICE)", ICE_BRENT);
+  // Akdeniz kapanışı gelmeyen gün için vekil hareketi: motorin ← gasoil, benzin ← Brent.
+  const needProxy = fuelData.some((x) => x != null && !x.prices.has(latest));
+  const gasoil = needProxy ? await fetchIce("Kuzey Avrupa motorin (ICE)", ICE_GASOIL) : null;
+  // Brent'in geçmiş günleri 19:30 kapanışıdır; Platts 16:30'da değerlendirdiği için dünün
+  // 16:30 fiyatı saklanır ve bugünün 16:30 fiyatı onunla kıyaslanır.
+  let brentSnaps: Record<string, number> = {};
+  try {
+    brentSnaps = JSON.parse(getSetting("ff_brent_1630") ?? "{}") as Record<string, number>;
+  } catch {
+    brentSnaps = {};
+  }
+  const proxies: Record<"gasoil" | "brent", { today: number | undefined; at: (d: string) => number | undefined }> = {
+    gasoil: { today: gasoil?.prices.get(latest), at: (d) => gasoil?.prices.get(d) },
+    brent: { today: brent?.prices.get(latest), at: (d) => brentSnaps[d] ?? brent?.prices.get(d) },
+  };
+  const provisional = (i: number): { v: number; k: string } | null => {
+    const got = fuelData[i];
+    const proxy = proxies[FUELS[i].proxy];
+    if (!got || proxy.today == null) return null;
+    // Hem Akdeniz kapanışı hem vekil fiyatı olan son gün.
+    const prevDay = [...got.prices.keys()].filter((d) => d < latest && proxy.at(d) != null).sort().pop();
+    if (!prevDay) return null;
+    return { v: (got.prices.get(prevDay)! * proxy.today) / proxy.at(prevDay)!, k: got.kontrat };
+  };
   const brentFix = brent != null && getSetting("ff_brent_source") !== "ice";
   const brentDays = new Set(brentFix ? days : days.slice(-3));
 
   const existing = new Map((db.prepare("SELECT * FROM market_prices").all() as PriceRow[]).map((r) => [r.tarih, r]));
   const upsert = db.prepare(
     `INSERT OR REPLACE INTO market_prices
-       (tarih, ho, ho_kontrat, rb, rb_kontrat, brent, ice, ice_kontrat, med, med_kontrat, usd, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (tarih, ho, ho_kontrat, rb, rb_kontrat, brent, ice, ice_kontrat, ice_tahmini, med, med_kontrat, med_tahmini, usd, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const added: string[] = [];
   const rewriteMotorin = motorinFix && fuelData[0] != null;
@@ -684,9 +720,16 @@ export async function refreshMarket(
       // Kaynak değişiminde ICE'ın verdiği günlerde eski motorin değeri tutulmaz.
       const rewrite = rewriteMotorin && f.key === "motorin" && got!.prices.has(d);
       const keep =
-        !rewrite && prev && prev[f.col] != null ? { v: prev[f.col] as number, k: prev[f.kcol] as string | null } : null;
+        !rewrite && prev && prev[f.col] != null
+          ? { v: prev[f.col] as number, k: prev[f.kcol] as string | null, t: prev[f.tcol] ? 1 : 0 }
+          : null;
       const v = got?.prices.get(d);
-      return v != null && (!keep || keep.k === got!.kontrat) ? { v, k: got!.kontrat } : keep;
+      // Kesin kapanış geldiyse yazılır (ön tahminin yerine her durumda).
+      if (v != null && (!keep || keep.t === 1 || keep.k === got!.kontrat)) return { v, k: got!.kontrat, t: 0 };
+      if (keep) return keep;
+      // Bugünün kapanışı henüz yok: ön tahmin.
+      const est = d === latest ? provisional(i) : null;
+      return est ? { ...est, t: 1 } : null;
     });
     const b = (prev?.brent == null || brentDays.has(d) ? brent?.prices.get(d) : undefined) ?? prev?.brent ?? null;
     if (vals.every((x) => x == null) && b == null) continue; // tatil ya da veri yok
@@ -700,12 +743,22 @@ export async function refreshMarket(
       b,
       vals[0]?.v ?? null,
       vals[0]?.k ?? null,
+      vals[0]?.t ?? 0,
       vals[1]?.v ?? null,
       vals[1]?.k ?? null,
+      vals[1]?.t ?? 0,
       usd,
       Date.now()
     );
     if (!prev) added.push(d);
+  }
+  // Bugünün Brent 16:30 fiyatı yarınki ön tahmin için saklanır (kapanışı henüz yayınlanmadıysa
+  // günün değeri gün içi veriden gelmiştir). Son bir haftası tutulur.
+  const lonNow = zoned(now, "Europe/London");
+  if (proxies.brent.today != null && brentSnaps[latest] == null && lonNow.iso === latest && lonNow.minutes < 19 * 60 + 30) {
+    brentSnaps[latest] = proxies.brent.today;
+    const keepFrom = addDays(latest, -7);
+    setSetting("ff_brent_1630", JSON.stringify(Object.fromEntries(Object.entries(brentSnaps).filter(([d]) => d >= keepFrom))));
   }
   if (brentFix) setSetting("ff_brent_source", "ice");
   if (rewriteMotorin) setSetting("ff_motorin_source", MOTORIN_SOURCE);
@@ -739,7 +792,7 @@ function buildFuel(
   const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
 
   // Zincirlenmiş seri: kontrat değişince aradaki fark sayılmaz.
-  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number };
+  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number; prov: boolean };
   const pts: Pt[] = [];
   for (const q of prices) {
     const raw = q[meta.col];
@@ -747,7 +800,7 @@ function buildFuel(
     if (raw == null || !kontrat) continue;
     const prev = pts[pts.length - 1];
     const idx = !prev ? raw : prev.kontrat === kontrat ? (prev.idx * raw) / prev.raw : prev.idx;
-    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0 });
+    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0, prov: !!q[meta.tcol] });
   }
   pts.forEach((p, i) => {
     const win = pts.slice(Math.max(0, i - n + 1), i + 1);
@@ -792,6 +845,7 @@ function buildFuel(
       tarih: p.tarih,
       raw: p.raw,
       kontrat: p.kontrat,
+      provisional: p.prov,
       usd: p.usd,
       pct: r.pct,
       model: r.model,
@@ -873,7 +927,7 @@ export function buildStatusText(cfg = getForecastConfig()): string {
       lines.push(`${f.icon} <b>${f.label}</b>: veri yok`);
       continue;
     }
-    const stale = r.tarih !== tarih ? ` (${fmtDay(r.tarih)})` : "";
+    const stale = r.tarih !== tarih ? ` (${fmtDay(r.tarih)})` : r.provisional ? " (ön)" : "";
     lines.push(
       `${f.icon} <b>${f.label}</b>: ${fmtPct(r.pct)} (eşik %${fmtNum(cfg.esikPct, 1)}) · ~${fmtSigned(r.tl)} TL/lt${stale}`
     );
@@ -897,6 +951,11 @@ export function buildStatusText(cfg = getForecastConfig()): string {
     return c ? `${f.label.toLocaleLowerCase("tr")} ${fmtDay(c.tarih)} (${fmtSigned(c.fark)} TL)` : null;
   }).filter(Boolean);
   if (last.length) lines.push(`Son pompa değişikliği: ${last.join(", ")}`);
+  const prov = FUELS.filter((f) => calc[f.key].latest?.provisional).map((f) => f.label.toLocaleLowerCase("tr"));
+  if (prov.length)
+    lines.push(
+      `ℹ️ Ön tahmin (${prov.join(", ")}): Akdeniz kapanışını ICE gece yayınlıyor; bugünkü değer Kuzey Avrupa motorini ve Brent'in gün içi hareketinden hesaplandı. Kesin kapanışla uyarı değişirse sabah haber verilir.`
+    );
   for (const f of FUELS) {
     const r = calc[f.key].latest;
     if (r?.calibrating)
@@ -971,9 +1030,9 @@ async function tick(): Promise<void> {
   if (!cfg.enabled) return;
   const now = new Date();
 
-  // 1) Piyasa: hafta içi Londra 16:45'ten sonra, o günün kapanışları alınana kadar. Motorin
-  // hazır ama benzin henüz yoksa 20:30'a kadar beklenir; 22:00'ye kadar hiçbiri gelmezse hata
-  // bildirilir (yedek kaynak yok).
+  // 1) Piyasa: hafta içi Londra 16:45'ten sonra günün değerleri alınır (Akdeniz kapanışı o
+  // saatte yoktur; ön tahmin yazılır) ve rapor gönderilir. Yakıtlardan biri eksikse 20:30'a
+  // kadar beklenir; 22:00'ye kadar hiçbiri gelmezse hata bildirilir.
   const lon = zoned(now, "Europe/London");
   if (!isWeekend(lon.iso) && lon.minutes >= FETCH_AFTER_LONDON && getSetting("ff_market_day") !== lon.iso) {
     let errors: string[] = [];
@@ -1006,6 +1065,38 @@ async function tick(): Promise<void> {
             (errors.length ? `\nHata: ${errors.join(" · ")}` : "\nICE o gün kapanış yayınlamamış olabilir (tatil).") +
             (have.length ? "\nEksik yakıt için son bilinen değer kullanıldı." : "\nBugün tahmin gönderilemedi.")
         );
+    }
+  }
+
+  // 1b) Kesin kapanış: ön tahminle kaydedilen günlerin Akdeniz kapanışı gece yayınlanır; en çok
+  // üç saatte bir (akşam çekiminden uzak saatlerde) yeniden bakılır. Gelince ön tahminin yerine
+  // yazılır; uyarı düzeyi akşam bildirilenden farklıysa düzeltme gönderilir.
+  const pending = getDb()
+    .prepare("SELECT tarih FROM market_prices WHERE tarih >= ? AND (ice_tahmini = 1 OR med_tahmini = 1) ORDER BY tarih")
+    .all(addDays(lon.iso, -7)) as { tarih: string }[];
+  const lastTry = Number(getSetting("ff_settle_try") ?? 0);
+  const evening = !isWeekend(lon.iso) && lon.minutes >= FETCH_AFTER_LONDON - 60 && getSetting("ff_market_day") !== lon.iso;
+  if (pending.length && !evening && now.getTime() - lastTry >= 3 * 3600_000) {
+    setSetting("ff_settle_try", String(now.getTime()));
+    try {
+      await refreshMarket(now);
+    } catch (e) {
+      console.error("[zam-tahmini] kesin kapanış alınamadı:", e instanceof Error ? e.message : e);
+    }
+    const left = (
+      getDb()
+        .prepare("SELECT COUNT(*) AS n FROM market_prices WHERE tarih >= ? AND (ice_tahmini = 1 OR med_tahmini = 1)")
+        .get(addDays(lon.iso, -7)) as { n: number }
+    ).n;
+    if (left === 0) {
+      // ICE'ın yayın saatini öğrenmek için kaydedilir (Zam Tahmini sayfasında görünür).
+      setSetting("ff_settle_seen", `${pending[pending.length - 1].tarih}|${now.getTime()}`);
+      const calc = computeForecast(cfg);
+      const levels = FUELS.map((f) => calc[f.key].latest?.level ?? "notr").join(",");
+      if (levels !== (getSetting("ff_last_levels") ?? levels) && isTelegramConfigured()) {
+        setSetting("ff_last_levels", levels);
+        await sendToChats(subscriberIds(), `✏️ <b>Kesin kapanışla güncellendi</b>\n${buildStatusText(cfg)}`);
+      }
     }
   }
 
