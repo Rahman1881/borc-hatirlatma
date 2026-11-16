@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
-import { ChevronLeft, ChevronRight, Copy, LayoutTemplate, Plus, Repeat, Send } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Fuel, LayoutTemplate, Plus, Repeat, Send } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,8 @@ import { callOp, errorText, fb } from "@/lib/cark-mobil/firebase";
 import { useCark } from "@/components/cark-mobil/store";
 import { Box, Empty, Field, Modal, PageHeader, Spinner, Tag, selectClass, useOp } from "@/components/cark-mobil/ui";
 import { RotationModal } from "@/components/cark-mobil/rotation";
+import { PumpWeekModal } from "@/components/cark-mobil/pump-week";
+import { serviceDay } from "@/lib/cark-mobil/pump-roster";
 import type { AppUser, Attendance, Shift, ShiftTemplate, WorkRole } from "@/lib/cark-mobil/types";
 import {
   WEEKDAYS_SHORT,
@@ -32,7 +34,9 @@ import {
 } from "@/lib/cark-mobil/util";
 
 // Haftalık vardiya planı. Vardiya taslak kaydedilir, yayınlanınca personelin telefonuna düşer.
-// Market ve yıkama için "otomatik düzen" tanımlanırsa sunucu sonraki haftaları kendisi yayınlar.
+// Market ve yıkama için "otomatik düzen" tanımlanırsa sunucu sonraki haftaları kendisi yayınlar;
+// pompa haftası "Pompa haftası" ile geçen haftanın düzeninden devralınıp tek seferde oluşturulur.
+// Tam gece yarısı başlayan vardiya (pompa 24–08) bir önceki günün gecesi sayılır.
 
 const ROLE_TONE: Record<WorkRole, string> = {
   pump: "border-l-amber-500",
@@ -58,6 +62,7 @@ export default function VardiyalarPage() {
   const [editing, setEditing] = useState<{ shift: Shift | null; day: string } | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showRotation, setShowRotation] = useState(false);
+  const [showPump, setShowPump] = useState(false);
   const [publishing, setPublishing] = useState(false);
 
   const from = istMs(week);
@@ -67,12 +72,12 @@ export default function VardiyalarPage() {
     const { db } = fb();
     const subs = [
       onSnapshot(
-        query(collection(db, "shifts"), where("startsAtMs", ">=", from), where("startsAtMs", "<", to), orderBy("startsAtMs")),
+        query(collection(db, "shifts"), where("startsAtMs", ">", from), where("startsAtMs", "<=", to), orderBy("startsAtMs")),
         (s) => setShifts(s.docs.map((d) => ({ id: d.id, ...d.data() }) as Shift)),
         () => setShifts([])
       ),
       onSnapshot(
-        query(collection(db, "attendance"), where("shiftStartsAtMs", ">=", from), where("shiftStartsAtMs", "<", to)),
+        query(collection(db, "attendance"), where("shiftStartsAtMs", ">", from), where("shiftStartsAtMs", "<=", to)),
         (s) => setAttendance(s.docs.map((d) => ({ id: d.id, ...d.data() }) as Attendance)),
         () => setAttendance([])
       ),
@@ -129,8 +134,11 @@ export default function VardiyalarPage() {
         description="Haftalık vardiya planı, personel giriş-çıkışları ve otomatik vardiya düzeni."
         action={
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" className="h-9" onClick={() => setShowPump(true)}>
+              <Fuel className="h-4 w-4" /> Pompa haftası
+            </Button>
             <Button variant="outline" className="h-9" onClick={() => setShowRotation(true)}>
-              <Repeat className="h-4 w-4" /> Otomatik düzen
+              <Repeat className="h-4 w-4" /> Market / yıkama düzeni
             </Button>
             <Button variant="outline" className="h-9" onClick={() => setShowTemplates(true)}>
               <LayoutTemplate className="h-4 w-4" /> Saat şablonları
@@ -192,7 +200,7 @@ export default function VardiyalarPage() {
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-7">
           {days.map((day, i) => {
-            const list = visible.filter((s) => istDay(s.startsAtMs) === day);
+            const list = visible.filter((s) => serviceDay(s.startsAtMs) === day);
             return (
               <div key={day} className={cn("rounded-xl border bg-card p-3", day === today && "ring-2 ring-primary/40")}>
                 <div className="mb-2 flex items-baseline justify-between">
@@ -259,6 +267,7 @@ export default function VardiyalarPage() {
       )}
       {showTemplates && <TemplatesModal templates={templates} onClose={() => setShowTemplates(false)} />}
       {showRotation && <RotationModal users={users} week={week} onClose={() => setShowRotation(false)} />}
+      {showPump && <PumpWeekModal users={users} week={week} shifts={shifts ?? []} onClose={() => setShowPump(false)} />}
     </div>
   );
 }
