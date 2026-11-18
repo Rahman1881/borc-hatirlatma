@@ -11,4 +11,7 @@ export async function register() {
   // Zam/İndirim Tahmini: sabah pompa fiyatı kontrolü + eksik veri hatırlatması.
   const { startForecastScheduler } = await import("@/lib/fuel-forecast");
   startForecastScheduler();
+  // Resmî Gazete: saatte bir bakıp kritik (ÖTV, EPDK, akaryakıt…) yeni düzenlemeyi bildirir.
+  const { startGazetteScheduler } = await import("@/lib/resmi-gazete");
+  startGazetteScheduler();
 }

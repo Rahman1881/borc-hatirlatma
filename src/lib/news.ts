@@ -2,11 +2,14 @@ import getDb from "@/lib/db";
 import { askGeminiGrounded, isGeminiConfigured } from "@/lib/gemini";
 import { getStationName } from "@/lib/station-report";
 import { computeForecast, getPumpChanges, listPrices } from "@/lib/fuel-forecast";
+import { buildGazetteSection } from "@/lib/resmi-gazete";
 
-// Günlük haber bülteni iki bölümdür:
+// Günlük haber bülteni üç bölümdür:
 //  1) Piyasa: portalın KENDİ verisi (ICE Brent, TCMB kuru, Petrol Ofisi pompa fiyatı, son
 //     değişiklik, zam tahmini). Yapay zekâ kullanılmaz; rakamlar doğrudur.
-//  2) Haberler: Gemini, Google Arama (grounding) ile son günlerin gelişmelerini özetler.
+//  2) Resmî Gazete: günün sayısından bizi ve Türkiye genelini ilgilendiren düzenlemeler
+//     (başlıklar resmî siteden; bkz. resmi-gazete.ts).
+//  3) Haberler: Gemini, Google Arama (grounding) ile son günlerin gelişmelerini özetler.
 //     Arama eski haberleri de getirir ve model tarihine bakmadan güncel diye yazabilir
 //     (14 Kasım 2026 bülteni Kasım 2024 rakamlarıyla gitti: Brent 71 $, dolar 34 TL). Bu yüzden
 //     her haber kodda süzülür: yayın tarihi son günlerde olmalı, eski yıla atıf içermemeli ve
@@ -217,16 +220,11 @@ export async function buildNewsReport(force = false): Promise<ReportResult> {
     if (cached) return { ok: true, text: cached };
   }
 
-  if (!isGeminiConfigured()) {
-    return {
-      ok: false,
-      text: "📰 Haber bülteni için Gemini API anahtarı gerekli. Ayarlar > Yapay Zeka bölümünden girin.",
-    };
-  }
-
   const bugun = fmtTodayLong();
   const facts = readFacts();
-  const market = marketSection(facts);
+  // Piyasa ve Resmî Gazete bölümleri habere bağlı değildir; haber üretilemese de gider.
+  const gazette = await buildGazetteSection(gun).catch(() => "");
+  const market = [marketSection(facts), gazette].filter(Boolean).join("\n\n");
   const dogru = [
     facts.brent != null ? `Brent yaklaşık ${tr(facts.brent, 0)} dolar` : null,
     facts.usd != null ? `dolar/TL yaklaşık ${tr(facts.usd, 1)}` : null,
@@ -270,6 +268,8 @@ Yanıtı SADECE şu JSON ile ver (başka açıklama ekleme); "tarih" haberin yay
           text: `📰 <b>${getStationName()} — Günlük Petrol & Akaryakıt Bülteni</b>\n${fmtToday()}\n\n${market}\n\n<i>Haber bölümü bugün hazırlanamadı (${why}).</i>`,
         }
       : { ok: false, text: `📰 Haber bülteni üretilemedi (${why}).` };
+
+  if (!isGeminiConfigured()) return withoutNews("Gemini API anahtarı tanımlı değil");
 
   let result: { text: string; sources: { title: string; url: string }[] };
   try {

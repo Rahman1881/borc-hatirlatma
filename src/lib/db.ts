@@ -267,6 +267,21 @@ function initDb(db: Database.Database) {
 
     -- Günlük haber bülteni önbelleği: aynı gün için haberler bir kez üretilir
     -- (Google Haberler RSS + Gemini açıklaması), tekrar istenirse önbellekten döner.
+    -- Resmî Gazete takibi (src/lib/resmi-gazete.ts): görülen düzenlemeler. bulten = günlük
+    -- bültende yer aldı; alerted = kritik başlık için anında uyarı gönderildi.
+    CREATE TABLE IF NOT EXISTS rg_items (
+      url TEXT PRIMARY KEY,
+      tarih TEXT NOT NULL,            -- YYYY-MM-DD
+      sayi TEXT,
+      mukerrer INTEGER NOT NULL DEFAULT 0,
+      bolum TEXT,
+      baslik TEXT NOT NULL,
+      kritik INTEGER NOT NULL DEFAULT 0,
+      seen_at INTEGER NOT NULL,
+      bulten INTEGER NOT NULL DEFAULT 0,
+      alerted INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS telegram_news_cache (
       gun TEXT PRIMARY KEY,           -- YYYY-MM-DD
       text TEXT NOT NULL,
