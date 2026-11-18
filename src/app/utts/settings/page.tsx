@@ -8,6 +8,16 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 
+type Seller = {
+  title: string;
+  address: string;
+  district: string;
+  city: string;
+  taxOffice: string;
+  phone: string;
+  email: string;
+};
+
 export default function UttsSettingsPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -26,6 +36,8 @@ export default function UttsSettingsPage() {
   const [uyumsoftLastTestMessage, setUyumsoftLastTestMessage] = useState("");
   const [uyumsoftEditing, setUyumsoftEditing] = useState(false);
   const [testingUyumsoft, setTestingUyumsoft] = useState(false);
+  const [seller, setSeller] = useState<Seller | null>(null);
+  const [savingSeller, setSavingSeller] = useState(false);
 
   useEffect(() => {
     fetch("/api/utts/settings")
@@ -54,7 +66,35 @@ export default function UttsSettingsPage() {
         setUyumsoftEditing(!data.hasCredentials);
       })
       .catch(() => {});
+
+    fetch("/api/uyumsoft/seller")
+      .then((r) => r.json())
+      .then((data: Seller) => setSeller(data))
+      .catch(() => {});
   }, []);
+
+  const saveSeller = async () => {
+    if (!seller) return;
+    setSavingSeller(true);
+    try {
+      const res = await fetch("/api/uyumsoft/seller", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(seller),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Şirket bilgileri kaydedilemedi");
+        return;
+      }
+      setSeller(data);
+      toast.success("Şirket bilgileri kaydedildi");
+    } catch {
+      toast.error("Şirket bilgileri kaydedilemedi");
+    } finally {
+      setSavingSeller(false);
+    }
+  };
 
   const login = async () => {
     if (!email || !password) {
@@ -393,6 +433,92 @@ export default function UttsSettingsPage() {
           </CardContent>
         </Card>
       </div>
+      {seller && (
+        <div className="max-w-2xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Fatura Gönderen (Şirket) Bilgileri</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Uyumsoft&apos;a gönderilen fatura taslaklarında gönderen olarak bu bilgiler yazılır.
+                VKN yukarıdaki Uyumsoft ayarından alınır
+                {uyumsoftVknTckn ? ` (${uyumsoftVknTckn})` : ""}.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="seller-title">Şirket unvanı</Label>
+                <Input
+                  id="seller-title"
+                  value={seller.title}
+                  onChange={(e) => setSeller({ ...seller, title: e.target.value })}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="seller-address">Adres</Label>
+                <Input
+                  id="seller-address"
+                  value={seller.address}
+                  onChange={(e) => setSeller({ ...seller, address: e.target.value })}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="seller-district">İlçe</Label>
+                  <Input
+                    id="seller-district"
+                    value={seller.district}
+                    onChange={(e) => setSeller({ ...seller, district: e.target.value })}
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="seller-city">İl</Label>
+                  <Input
+                    id="seller-city"
+                    value={seller.city}
+                    onChange={(e) => setSeller({ ...seller, city: e.target.value })}
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="seller-tax-office">Vergi dairesi</Label>
+                  <Input
+                    id="seller-tax-office"
+                    value={seller.taxOffice}
+                    onChange={(e) => setSeller({ ...seller, taxOffice: e.target.value })}
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="seller-phone">Telefon</Label>
+                  <Input
+                    id="seller-phone"
+                    value={seller.phone}
+                    onChange={(e) => setSeller({ ...seller, phone: e.target.value })}
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="seller-email">E-posta</Label>
+                  <Input
+                    id="seller-email"
+                    value={seller.email}
+                    onChange={(e) => setSeller({ ...seller, email: e.target.value })}
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+              <Button onClick={saveSeller} disabled={savingSeller} className="w-full">
+                {savingSeller ? "Kaydediliyor..." : "Şirket Bilgilerini Kaydet"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

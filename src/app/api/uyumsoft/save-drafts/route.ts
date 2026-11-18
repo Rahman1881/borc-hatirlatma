@@ -10,6 +10,7 @@ import {
   type UyumsoftEInvoiceUserResult,
   type UyumsoftSettings,
 } from "@/lib/uyumsoft";
+import { getSellerInfo } from "@/lib/uyumsoft-seller";
 
 export const runtime = "nodejs";
 
@@ -275,10 +276,6 @@ function getIssueDateTime(invoiceDate: string) {
   };
 }
 
-function getSellerName(settings: UyumsoftSettings) {
-  return settings.username || "UTTS Yetkili Montaj Firması";
-}
-
 function buildGroups(rows: UttsRow[], mergeByBuyer: boolean) {
   if (!mergeByBuyer) {
     return rows.map((row) => [row]);
@@ -427,7 +424,8 @@ function buildInvoiceInfoXml(input: {
   const buyerTaxNumber =
     input.recipientTaxNumber.replace(/\D/g, "") || getTaxNumber(buyerRow);
   const sellerTaxNumber = (input.settings.vknTckn || "").replace(/\D/g, "");
-  const sellerName = getSellerName(input.settings);
+  // Gönderen: şirketin unvanı ve adresi (web servis kullanıcı adı değil).
+  const seller = getSellerInfo();
   const { issueDate, issueTime } = getIssueDateTime(input.invoiceDate);
   const uuid = randomUUID();
   const localDocumentId = `UTTS-${issueDate.replace(/\D/g, "")}-${input.groupIndex + 1}`;
@@ -442,7 +440,13 @@ function buildInvoiceInfoXml(input: {
 
   const sellerParty = buildPartyXml({
     taxNumber: sellerTaxNumber,
-    title: sellerName,
+    title: seller.title,
+    taxOffice: seller.taxOffice,
+    city: seller.city,
+    district: seller.district,
+    address: seller.address,
+    email: seller.email,
+    phone: seller.phone,
   });
   const buyerParty = buildPartyXml({
     taxNumber: buyerTaxNumber,
