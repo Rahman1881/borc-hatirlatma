@@ -282,6 +282,53 @@ function initDb(db: Database.Database) {
       alerted INTEGER NOT NULL DEFAULT 0
     );
 
+    -- Şirket ve Özlük Belgeleri (src/lib/belgeler.ts). belge_varliklar: belgelerin bağlandığı
+    -- araçlar (plaka) ve personel. belgeler: kapsam = sirket | arac | personel; bitis boşsa
+    -- süresiz; yenilenen belgenin eskisi durum = 'arsiv' olur. Dosyalar data/belgeler/<id>/
+    -- klasöründedir; belge_hatirlatma gönderilen hatırlatmaları (eşik başına bir kez) tutar.
+    CREATE TABLE IF NOT EXISTS belge_varliklar (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tur TEXT NOT NULL,              -- arac | personel
+      ad TEXT NOT NULL,
+      aciklama TEXT NOT NULL DEFAULT '',
+      aktif INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS belgeler (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kapsam TEXT NOT NULL,
+      varlik_id INTEGER,
+      tur TEXT NOT NULL,
+      belge_no TEXT NOT NULL DEFAULT '',
+      kurum TEXT NOT NULL DEFAULT '',
+      baslangic TEXT,                 -- YYYY-MM-DD
+      bitis TEXT,                     -- YYYY-MM-DD; boş = süresiz
+      hatirlat TEXT NOT NULL DEFAULT '30,15,7,1',
+      notlar TEXT NOT NULL DEFAULT '',
+      durum TEXT NOT NULL DEFAULT 'gecerli',
+      onceki_id INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS belge_dosyalar (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      belge_id INTEGER NOT NULL,
+      ad TEXT NOT NULL,               -- kullanıcının yüklediği dosya adı
+      yol TEXT NOT NULL,              -- diskteki (rastgele) ad
+      tip TEXT NOT NULL,
+      boyut INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS belge_hatirlatma (
+      belge_id INTEGER NOT NULL,
+      anahtar TEXT NOT NULL,
+      sent_at INTEGER NOT NULL,
+      PRIMARY KEY (belge_id, anahtar)
+    );
+
     CREATE TABLE IF NOT EXISTS telegram_news_cache (
       gun TEXT PRIMARY KEY,           -- YYYY-MM-DD
       text TEXT NOT NULL,

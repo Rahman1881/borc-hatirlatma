@@ -50,3 +50,6 @@ data.db-wal
 /.claude/
 /.wwebjs_auth/
 /.wwebjs_cache/
+
+# Şirket ve Özlük Belgeleri: yüklenen dosyalar (yalnız sunucuda durur)
+/data/belgeler/

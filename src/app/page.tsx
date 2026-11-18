@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CreditCard, Fuel, RadioTower, Smartphone, Sparkles, Users } from "lucide-react";
+import { ArrowRight, CreditCard, FolderOpen, Fuel, RadioTower, Smartphone, Sparkles, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -48,6 +48,13 @@ const modules = [
     description:
       "Mobil uygulamadaki yönetici işlemleri: sefer planlama ve canlı takip, müşteriler, tankerler, yakıt alımları ve ekip.",
     icon: Smartphone,
+  },
+  {
+    href: "/belgeler",
+    title: "Şirket ve Özlük Belgeleri",
+    description:
+      "Şirket, araç ve personel belgeleri tek yerde: dosya yükleme, geçerlilik takibi ve süresi dolmadan Telegram hatırlatması.",
+    icon: FolderOpen,
   },
 ];
 

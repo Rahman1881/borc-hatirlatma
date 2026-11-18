@@ -14,4 +14,7 @@ export async function register() {
   // Resmî Gazete: saatte bir bakıp kritik (ÖTV, EPDK, akaryakıt…) yeni düzenlemeyi bildirir.
   const { startGazetteScheduler } = await import("@/lib/resmi-gazete");
   startGazetteScheduler();
+  // Şirket ve Özlük Belgeleri: süresi yaklaşan belgeler için günlük Telegram hatırlatması.
+  const { startBelgeScheduler } = await import("@/lib/belgeler");
+  startBelgeScheduler();
 }

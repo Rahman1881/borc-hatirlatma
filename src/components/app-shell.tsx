@@ -7,6 +7,7 @@ import UttsSidebar from "@/components/utts-sidebar";
 import AiSidebar from "@/components/ai/ai-sidebar";
 import AnalitikSidebar from "@/components/analitik-sidebar";
 import YakitOfisiSidebar from "@/components/yakit-ofisi-sidebar";
+import BelgelerSidebar from "@/components/belgeler/sidebar";
 
 // Çark Mobil, Firebase'e tarayıcıdan bağlandığı için kendi kabuğuyla ve yalnız o sayfalarda yüklenir.
 const CarkMobilShell = dynamic(() => import("@/components/cark-mobil/shell"), { ssr: false });
@@ -30,10 +31,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isAiPanel = pathname.startsWith("/ai");
   const isAnalitikPanel = pathname.startsWith("/analitik");
   const isYakitOfisiPanel = pathname.startsWith("/yakit-ofisi");
+  const isBelgelerPanel = pathname.startsWith("/belgeler");
 
   return (
     <div className="flex h-screen">
-      {isYakitOfisiPanel ? (
+      {isBelgelerPanel ? (
+        <BelgelerSidebar />
+      ) : isYakitOfisiPanel ? (
         <YakitOfisiSidebar />
       ) : isAnalitikPanel ? (
         <AnalitikSidebar />
