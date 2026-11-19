@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Ban, BarChart3, CreditCard, Gauge, LayoutGrid, LayoutDashboard, Settings, TrendingDown, Wallet } from "lucide-react";
+import { Ban, BarChart3, CreditCard, Gauge, LayoutGrid, LayoutDashboard, Send, Settings, TrendingDown, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -14,6 +14,7 @@ const navItems = [
   { href: "/yakit-ofisi/alim-dusen", label: "Alımı Düşen veya Bırakanlar", icon: TrendingDown },
   { href: "/yakit-ofisi/reddedilen", label: "Pompada Reddedilenler", icon: Ban },
   { href: "/yakit-ofisi/kart-hatalari", label: "Kart Hataları", icon: CreditCard },
+  { href: "/yakit-ofisi/rotanet", label: "RotaNet Bağlantısı", icon: Send },
   { href: "/yakit-ofisi/ayarlar", label: "Bağlantı Ayarları", icon: Settings },
 ];
 

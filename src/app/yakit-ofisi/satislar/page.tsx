@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CustomerCell, ErrorNote, groupFilter, FetchedAt, PageHeader, fmtDate, fmtNum, fmtTL, type Section } from "../shared";
 import { DataTable, type Column, type MultiFilter, type SelectFilter, type ToggleFilter } from "../data-table";
 import { FleetDialog } from "../fleet-dialog";
+import { YO_FUEL_NAMES } from "@/lib/yo-fuel";
 
 type SalesRow = {
   dimensionID?: number | null;
@@ -112,21 +113,7 @@ const GROUP_TABS = [
 
 const MONTHS = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
 
-const FUEL_NAMES: Record<string, string> = {
-  "0": "Kurşunsuz 95",
-  "1": "ProDiesel",
-  "2": "EuroDiesel",
-  "31": "AdBlue",
-  "37": "HGS",
-  "45": "HGS etiket",
-  Benzine95: "Kurşunsuz 95",
-  ProDiesel: "ProDiesel",
-  EuroDiesel: "EuroDiesel",
-  PoAdBlue: "AdBlue",
-  Toll: "HGS",
-  TollTag: "HGS etiket",
-};
-const fuelName = (v?: number | string) => (v == null ? "—" : FUEL_NAMES[String(v)] ?? String(v));
+const fuelName = (v?: number | string) => (v == null ? "—" : YO_FUEL_NAMES[String(v)] ?? String(v));
 
 const fmtCompactTL = (n: number) =>
   Math.abs(n) >= 1e6

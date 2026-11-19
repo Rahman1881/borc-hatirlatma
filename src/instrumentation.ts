@@ -17,4 +17,7 @@ export async function register() {
   // Şirket ve Özlük Belgeleri: süresi yaklaşan belgeler için günlük Telegram hatırlatması.
   const { startBelgeScheduler } = await import("@/lib/belgeler");
   startBelgeScheduler();
+  // Yakıt Ofisi → RotaNet: seçilen filoların yakıt alımlarını 15 dakikada bir gönderir.
+  const { startRotaNetScheduler } = await import("@/lib/rotanet");
+  startRotaNetScheduler();
 }

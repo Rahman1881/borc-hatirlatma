@@ -329,6 +329,21 @@ function initDb(db: Database.Database) {
       PRIMARY KEY (belge_id, anahtar)
     );
 
+    -- Yakıt Ofisi → RotaNet: bir bağlantı = bir RotaNet anahtarı + seçilen filolar.
+    -- Anahtarın kendisi burada değil, settings tablosunda durur (rotanet_key_<id>).
+    CREATE TABLE IF NOT EXISTS rotanet_baglantilar (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sirket TEXT NOT NULL DEFAULT '',        -- RotaNet'in anahtar için döndürdüğü şirket adı
+      filolar TEXT NOT NULL DEFAULT '[]',     -- JSON: [{ id, ad, kod }]
+      etkin INTEGER NOT NULL DEFAULT 1,
+      anahtar_gecersiz INTEGER NOT NULL DEFAULT 0,
+      son_gonderim INTEGER,                   -- son başarılı gönderim (ms)
+      son_deneme INTEGER,
+      son_sonuc TEXT,                         -- JSON
+      son_hata TEXT,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS telegram_news_cache (
       gun TEXT PRIMARY KEY,           -- YYYY-MM-DD
       text TEXT NOT NULL,
