@@ -62,7 +62,7 @@ type Data = {
   lastFetched: number | null;
   latest: Record<Fuel, FuelRow | null>;
   lastChange: Record<Fuel, PumpChange | null>;
-  katsayi?: Record<Fuel, { deger: number; otomatik: boolean; ornekler: { tarih: string; yakit: Fuel; katsayi: number }[] }>;
+  katsayi?: Record<Fuel, { deger: number; otomatik: boolean; ornekler: { tarih: string; yakit: Fuel; katsayi: number; kesin?: boolean }[] }>;
   rows: PriceRow[];
   changes: (PumpChange & { estimate: FuelRow | null })[];
   statusText: string;
@@ -604,7 +604,8 @@ export default function ZamTahminiPage() {
               <p className="text-xs text-muted-foreground">
                 {data.katsayi.motorin.otomatik ? (
                   <>
-                    Şu an kullanılan katsayı: <b className="text-foreground">{num(data.katsayi.motorin.deger, 2)}</b> (son{" "}
+                    Şu an kullanılan katsayı: <b className="text-foreground">{num(data.katsayi.motorin.deger, 2)}</b> (
+                    {data.katsayi.motorin.ornekler.every((o) => o.kesin) ? "karar gününün resmi değeri girilmiş " : "son "}
                     {data.katsayi.motorin.ornekler.length} değişikliğin ortancası:{" "}
                     {data.katsayi.motorin.ornekler
                       .map((o) => `${fmtDay(o.tarih)} ${o.yakit === "motorin" ? "motorin" : "benzin"} ${num(o.katsayi, 2)}`)

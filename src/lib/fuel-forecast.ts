@@ -54,11 +54,12 @@ export type ForecastConfig = {
 // Resmi hesap (sektör bilirkişisi): son 5 kapanışın ortalaması. Baz da aynı ortalamanın karar
 // günündeki değeridir (ortalama/ortalama); tek günün kapanışı baz alınınca sert hareketlerden
 // sonra ortalama ile baz ayrışıyordu (6 Kasım 2026 indiriminin ertesi günü +%4 gösterdi).
-// Değerin her puanı pompada, "ürün maliyeti × KDV"nin yüzdesinden belirgin fazla yansıyor:
-// Kasım 2026'daki beş değişiklikte (iki yakıt) oran 2,2–2,5 çıktı. Eski 1,3 / 0,95 katsayıları
-// resmi değere geçilmeden önceki testten kalmıştı ve TL tahminini yarı yarıya düşük gösteriyordu
-// (20 Kas motorin: tahmin −3,4 TL, gerçekleşen −6,5 TL).
-const KATSAYI_VARSAYILAN = 2.35;
+// Değerin her puanı pompada, "ürün maliyeti × KDV"nin yüzdesinden belirgin fazla yansıyor.
+// Karar gününün resmi değeri bilinen iki değişiklik birebir aynı oranı verdi (7 Kas 2026 motorin
+// 2,315; 12 Kas 2026 benzin 2,316); değerin tahmin edildiği üçünde 2,2–2,5. Eski 1,3 / 0,95
+// katsayıları resmi değere geçilmeden önceki testten kalmıştı ve TL tahminini yarı yarıya düşük
+// gösteriyordu (20 Kas motorin: tahmin −3,4 TL, gerçekleşen −6,5 TL).
+const KATSAYI_VARSAYILAN = 2.32;
 const KATSAYI_ESKI = { motorin: 1.3, benzin: 0.95 };
 
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
@@ -126,7 +127,8 @@ export type OfficialValue = { tarih: string; yakit: Fuel; deger: number };
 export type OfficialCheck = OfficialValue & { veriTarih: string; tahmin: number };
 
 // Bir pompa değişikliğinden çıkan yansıma katsayısı: gerçekleşen TL / (değer × maliyet × KDV).
-export type KatsayiOrnek = { tarih: string; yakit: Fuel; katsayi: number };
+// `kesin`: karar gününün resmi değeri girilmiş (değer tahmin değil, dağıtıcının kendi rakamı).
+export type KatsayiOrnek = { tarih: string; yakit: Fuel; katsayi: number; kesin: boolean };
 export type KatsayiDurum = { deger: number; otomatik: boolean; ornekler: KatsayiOrnek[] };
 
 export type FuelCalc = {
@@ -815,7 +817,8 @@ function buildFuel(
   const kats = fuel === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
 
   // Zincirlenmiş seri: kontrat değişince aradaki fark sayılmaz.
-  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number; prov: boolean };
+  type Pt = { tarih: string; raw: number; kontrat: string; usd: number; idx: number; c: number; avg: number; baz: number; prov: boolean };
+  const bazN = BAZ_KAPANIS[fuel] ?? n;
   const pts: Pt[] = [];
   for (const q of prices) {
     const raw = q[meta.col];
@@ -823,11 +826,15 @@ function buildFuel(
     if (raw == null || !kontrat) continue;
     const prev = pts[pts.length - 1];
     const idx = !prev ? raw : prev.kontrat === kontrat ? (prev.idx * raw) / prev.raw : prev.idx;
-    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0, prov: !!q[meta.tcol] });
+    pts.push({ tarih: q.tarih, raw, kontrat, usd: q.usd, idx, c: idx * q.usd, avg: 0, baz: 0, prov: !!q[meta.tcol] });
   }
+  const mean = (i: number, k: number) => {
+    const win = pts.slice(Math.max(0, i - k + 1), i + 1);
+    return win.reduce((a, x) => a + x.c, 0) / win.length;
+  };
   pts.forEach((p, i) => {
-    const win = pts.slice(Math.max(0, i - n + 1), i + 1);
-    p.avg = win.reduce((a, x) => a + x.c, 0) / win.length;
+    p.avg = mean(i, n);
+    p.baz = mean(i, bazN);
   });
 
   const changes = allChanges.filter((c) => c.yakit === fuel && !c.ignored);
@@ -852,7 +859,8 @@ function buildFuel(
       j = ch ? pts.findIndex((x) => x.tarih >= ilan) : 0;
       calibrating = true;
     }
-    const model = (p.avg / pts[j].avg - 1) * 100;
+    // Veri değişiklikten sonra başlıyorsa (calibrating) baz o günün ortalamasıdır.
+    const model = (p.avg / (calibrating || !ch ? pts[j].avg : pts[j].baz) - 1) * 100;
     // Son pompa değişikliğinden önce gelen resmi değerler eski baza aittir, kullanılmaz.
     const a =
       anchors.filter((x) => x.i <= i && (!ch || x.tarih >= ch.tarih) && (!before || x.tarih < before)).pop() ?? null;
@@ -905,6 +913,13 @@ function buildFuel(
   };
 }
 
+// Pompa değişikliğinden sonra, resmi değer gelene kadarki okumanın bazı: karar gününe kadarki
+// son kaç kapanışın ortalaması. Motorinde resmi değer değişiklikten sonra 5 günlük ortalamadan
+// değil daha güncel bir düzeyden yeniden başlıyor: 5 günlük bazla model 7 Kas'ta −1,70 (resmi
+// +0,20), 20 Kas'ta −3,01 (resmi −1,20) diyerek yanlış "indirim bekleniyor" uyarısı verdi; son
+// 3 kapanışla +0,33 ve −1,38. Benzinde 5 günlük baz daha iyi tuttuğu için değişmedi.
+const BAZ_KAPANIS: Partial<Record<Fuel, number>> = { motorin: 3 };
+
 const tlOf = (pct: number, maliyet: number, kats: number, cfg: ForecastConfig) =>
   (pct / 100) * maliyet * 1.2 * kats * (1 - cfg.eselPay / 100);
 
@@ -913,8 +928,10 @@ const KATSAYI_MIN_ORNEK = 2; // bundan az örnek varsa ayarlardaki katsayı kull
 
 // TL tahminini geçmişe göre ayarlar. Her gerçekleşen değişiklik bir örnek verir: karar günü
 // değeri (resmi değere dayanan okuma) ile pompadaki TL farkının oranı. İki yakıtta oran aynı
-// çıktığı için örnekler ortaktır; son 6 örneğin ortancası kullanılır. Her satır yalnız kendi
-// gününe kadar bilinen değişikliklerle hesaplanır (geçmiş tahminler sonradan iyileşmiş görünmez).
+// çıktığı için örnekler ortaktır. Son 6 örnek içinde karar gününün resmi değeri girilmiş en az
+// iki "kesin" örnek varsa yalnız onların ortancası alınır (diğerlerinde değer bizim tahminimiz
+// olduğu için oran ±%8 oynuyor); yoksa hepsinin ortancası. Her satır yalnız kendi gününe kadar
+// bilinen değişikliklerle hesaplanır (geçmiş tahminler sonradan iyileşmiş görünmez).
 function calibrateTl(calc: Record<Fuel, FuelCalc>, cfg: ForecastConfig): void {
   const ornekler: KatsayiOrnek[] = [];
   for (const f of FUELS) {
@@ -923,13 +940,16 @@ function calibrateTl(calc: Record<Fuel, FuelCalc>, cfg: ForecastConfig): void {
       // Resmi değere dayanmayan (yalnız model) okumalar ve eşiğe uzak / ters yönlü olanlar örnek sayılmaz.
       if (c.ignored || !e?.anchor || Math.abs(e.pct) < 1.5 || e.pct * c.fark <= 0) continue;
       const k = c.fark / tlOf(e.pct, e.maliyet, 1, cfg);
-      if (k >= 0.5 && k <= 5) ornekler.push({ tarih: c.tarih, yakit: f.key, katsayi: k });
+      // Mesaj karar kapanışından sonraki güne aitse değer o kapanışın resmi değeridir.
+      if (k >= 0.5 && k <= 5) ornekler.push({ tarih: c.tarih, yakit: f.key, katsayi: k, kesin: e.anchor.tarih > e.tarih });
     }
   }
   ornekler.sort((a, b) => a.tarih.localeCompare(b.tarih));
   const at = (tarih: string, fallback: number): KatsayiDurum => {
-    const son = ornekler.filter((o) => o.tarih <= tarih).slice(-KATSAYI_SON);
-    if (son.length < KATSAYI_MIN_ORNEK) return { deger: fallback, otomatik: false, ornekler: son };
+    const hepsi = ornekler.filter((o) => o.tarih <= tarih).slice(-KATSAYI_SON);
+    if (hepsi.length < KATSAYI_MIN_ORNEK) return { deger: fallback, otomatik: false, ornekler: hepsi };
+    const kesin = hepsi.filter((o) => o.kesin);
+    const son = kesin.length >= KATSAYI_MIN_ORNEK ? kesin : hepsi;
     const v = son.map((o) => o.katsayi).sort((a, b) => a - b);
     const mid = v.length >> 1;
     return { deger: v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2, otomatik: true, ornekler: son };
