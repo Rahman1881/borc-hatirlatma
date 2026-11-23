@@ -41,7 +41,8 @@ export type ForecastConfig = {
   // Güncel maliyet: son kaç kapanışın ortalaması (yakıta göre).
   ortalamaMotorin: number;
   ortalamaBenzin: number;
-  // Pompaya yansıyan / hesaplanan TL oranı. Geçmiş testten: motorin ~1,3, benzin ~0,95.
+  // Pompaya yansıyan / hesaplanan TL oranı. Yeterli geçmiş değişiklik varsa katsayı onlardan
+  // otomatik bulunur (bkz. calibrateTl); bu değerler yalnız örnek yokken kullanılır.
   katsayiMotorin: number;
   katsayiBenzin: number;
   eselPay: number; // eşel mobil: değişimin devletin ÖTV'den karşıladığı payı (%)
@@ -53,13 +54,20 @@ export type ForecastConfig = {
 // Resmi hesap (sektör bilirkişisi): son 5 kapanışın ortalaması. Baz da aynı ortalamanın karar
 // günündeki değeridir (ortalama/ortalama); tek günün kapanışı baz alınınca sert hareketlerden
 // sonra ortalama ile baz ayrışıyordu (6 Kasım 2026 indiriminin ertesi günü +%4 gösterdi).
+// Değerin her puanı pompada, "ürün maliyeti × KDV"nin yüzdesinden belirgin fazla yansıyor:
+// Kasım 2026'daki beş değişiklikte (iki yakıt) oran 2,2–2,5 çıktı. Eski 1,3 / 0,95 katsayıları
+// resmi değere geçilmeden önceki testten kalmıştı ve TL tahminini yarı yarıya düşük gösteriyordu
+// (20 Kas motorin: tahmin −3,4 TL, gerçekleşen −6,5 TL).
+const KATSAYI_VARSAYILAN = 2.35;
+const KATSAYI_ESKI = { motorin: 1.3, benzin: 0.95 };
+
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   enabled: true,
   esikPct: 3,
   ortalamaMotorin: 5,
   ortalamaBenzin: 5,
-  katsayiMotorin: 1.3,
-  katsayiBenzin: 0.95,
+  katsayiMotorin: KATSAYI_VARSAYILAN,
+  katsayiBenzin: KATSAYI_VARSAYILAN,
   eselPay: 0,
   gunlukDurum: true,
   yoksay: [],
@@ -103,6 +111,8 @@ export type FuelRow = {
   model: number; // yalnız model: 5 günlük ortalamanın karar günündeki ortalamaya göre sapması (%)
   anchor: { tarih: string; deger: number } | null; // tahminin dayandığı resmi değer (mesaj günü)
   tl: number; // pompaya yansıması beklenen TL/litre (KDV dahil)
+  maliyet: number; // ürün maliyeti, TL/litre (KDV hariç; $/ton × kur)
+  katsayi: number; // tl hesabında kullanılan yansıma katsayısı
   level: Level;
   change: PumpChange | null; // hesaba esas son pompa değişikliği
   baseTarih: string;
@@ -115,8 +125,13 @@ export type OfficialValue = { tarih: string; yakit: Fuel; deger: number };
 // Resmi değer ile, o değer gelmeden önceki akşam sistemin yaptığı tahmin.
 export type OfficialCheck = OfficialValue & { veriTarih: string; tahmin: number };
 
+// Bir pompa değişikliğinden çıkan yansıma katsayısı: gerçekleşen TL / (değer × maliyet × KDV).
+export type KatsayiOrnek = { tarih: string; yakit: Fuel; katsayi: number };
+export type KatsayiDurum = { deger: number; otomatik: boolean; ornekler: KatsayiOrnek[] };
+
 export type FuelCalc = {
   yakit: Fuel;
+  katsayi: KatsayiDurum; // son okumada kullanılan katsayı ve dayandığı değişiklikler
   rows: FuelRow[];
   latest: FuelRow | null;
   lastChange: PumpChange | null;
@@ -198,7 +213,15 @@ const OLD_CONFIG_KEYS = ["fuel_forecast_v3", "fuel_forecast_v2"];
 export function getForecastConfig(): ForecastConfig {
   try {
     const raw = getSetting(CONFIG_KEY);
-    if (raw) return { ...DEFAULT_FORECAST_CONFIG, ...(JSON.parse(raw) as Partial<ForecastConfig>) };
+    if (raw) {
+      const c = { ...DEFAULT_FORECAST_CONFIG, ...(JSON.parse(raw) as Partial<ForecastConfig>) };
+      // Kayıtlı katsayılar eski varsayılanlarsa (hiç elle değiştirilmemiş) yeni varsayılana geçer.
+      if (c.katsayiMotorin === KATSAYI_ESKI.motorin && c.katsayiBenzin === KATSAYI_ESKI.benzin) {
+        c.katsayiMotorin = KATSAYI_VARSAYILAN;
+        c.katsayiBenzin = KATSAYI_VARSAYILAN;
+      }
+      return c;
+    }
     for (const key of OLD_CONFIG_KEYS) {
       const old = getSetting(key);
       if (!old) continue;
@@ -840,7 +863,7 @@ function buildFuel(
   const rows: FuelRow[] = pts.map((p, i) => {
     const r = read(i);
     const perLitre = (p.raw * p.usd) / meta.litrePerTon; // TL/litre ürün maliyeti
-    const tl = (r.pct / 100) * perLitre * 1.2 * kats * (1 - cfg.eselPay / 100);
+    const tl = tlOf(r.pct, perLitre, kats, cfg);
     return {
       tarih: p.tarih,
       raw: p.raw,
@@ -851,6 +874,8 @@ function buildFuel(
       model: r.model,
       anchor: r.a ? { tarih: r.a.tarih, deger: r.a.deger } : null,
       tl,
+      maliyet: perLitre,
+      katsayi: kats,
       level: levelOf(r.pct, cfg.esikPct),
       change: r.ch,
       baseTarih: pts[r.j].tarih,
@@ -861,6 +886,7 @@ function buildFuel(
   const own = allChanges.filter((c) => c.yakit === fuel);
   return {
     yakit: fuel,
+    katsayi: { deger: kats, otomatik: false, ornekler: [] },
     rows,
     latest: rows[rows.length - 1] ?? null,
     lastChange: changes[changes.length - 1] ?? null,
@@ -879,14 +905,58 @@ function buildFuel(
   };
 }
 
+const tlOf = (pct: number, maliyet: number, kats: number, cfg: ForecastConfig) =>
+  (pct / 100) * maliyet * 1.2 * kats * (1 - cfg.eselPay / 100);
+
+const KATSAYI_SON = 6; // katsayı en son kaç değişiklikten hesaplanır
+const KATSAYI_MIN_ORNEK = 2; // bundan az örnek varsa ayarlardaki katsayı kullanılır
+
+// TL tahminini geçmişe göre ayarlar. Her gerçekleşen değişiklik bir örnek verir: karar günü
+// değeri (resmi değere dayanan okuma) ile pompadaki TL farkının oranı. İki yakıtta oran aynı
+// çıktığı için örnekler ortaktır; son 6 örneğin ortancası kullanılır. Her satır yalnız kendi
+// gününe kadar bilinen değişikliklerle hesaplanır (geçmiş tahminler sonradan iyileşmiş görünmez).
+function calibrateTl(calc: Record<Fuel, FuelCalc>, cfg: ForecastConfig): void {
+  const ornekler: KatsayiOrnek[] = [];
+  for (const f of FUELS) {
+    for (const c of calc[f.key].changes) {
+      const e = c.estimate;
+      // Resmi değere dayanmayan (yalnız model) okumalar ve eşiğe uzak / ters yönlü olanlar örnek sayılmaz.
+      if (c.ignored || !e?.anchor || Math.abs(e.pct) < 1.5 || e.pct * c.fark <= 0) continue;
+      const k = c.fark / tlOf(e.pct, e.maliyet, 1, cfg);
+      if (k >= 0.5 && k <= 5) ornekler.push({ tarih: c.tarih, yakit: f.key, katsayi: k });
+    }
+  }
+  ornekler.sort((a, b) => a.tarih.localeCompare(b.tarih));
+  const at = (tarih: string, fallback: number): KatsayiDurum => {
+    const son = ornekler.filter((o) => o.tarih <= tarih).slice(-KATSAYI_SON);
+    if (son.length < KATSAYI_MIN_ORNEK) return { deger: fallback, otomatik: false, ornekler: son };
+    const v = son.map((o) => o.katsayi).sort((a, b) => a - b);
+    const mid = v.length >> 1;
+    return { deger: v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2, otomatik: true, ornekler: son };
+  };
+  for (const f of FUELS) {
+    const fc = calc[f.key];
+    const fallback = f.key === "motorin" ? cfg.katsayiMotorin : cfg.katsayiBenzin;
+    // Son okuma bilinen bütün değişiklikleri kullanır; eski satırlar o akşam bilinenleri
+    // (ertesi gün yürürlüğe giren değişiklik aynı gün 16:00'da açıklanmıştır).
+    fc.katsayi = at("9999-12-31", fallback);
+    for (const r of fc.rows) {
+      r.katsayi = r === fc.latest ? fc.katsayi.deger : at(addDays(r.tarih, 1), fallback).deger;
+      r.tl = tlOf(r.pct, r.maliyet, r.katsayi, cfg);
+    }
+  }
+}
+
 export function computeForecast(cfg = getForecastConfig()): Record<Fuel, FuelCalc> {
   const prices = listPrices();
   const changes = getPumpChanges(cfg);
   const officials = listOfficialValues();
-  return {
+  const calc = {
     motorin: buildFuel("motorin", prices, changes, officials, cfg),
     benzin: buildFuel("benzin", prices, changes, officials, cfg),
   };
+  calibrateTl(calc, cfg);
+  return calc;
 }
 
 // --- Telegram metinleri --------------------------------------------------------

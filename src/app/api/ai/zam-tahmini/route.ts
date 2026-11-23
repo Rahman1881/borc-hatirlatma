@@ -56,6 +56,7 @@ function snapshot() {
     lastFetched: prices.reduce((a, p) => Math.max(a, p.fetched_at), 0) || null,
     latest: { motorin: calc.motorin.latest, benzin: calc.benzin.latest },
     lastChange: { motorin: calc.motorin.lastChange, benzin: calc.benzin.lastChange },
+    katsayi: { motorin: calc.motorin.katsayi, benzin: calc.benzin.katsayi },
     rows,
     changes,
     statusText: buildStatusText(config),

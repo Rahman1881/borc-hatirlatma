@@ -62,6 +62,7 @@ type Data = {
   lastFetched: number | null;
   latest: Record<Fuel, FuelRow | null>;
   lastChange: Record<Fuel, PumpChange | null>;
+  katsayi?: Record<Fuel, { deger: number; otomatik: boolean; ornekler: { tarih: string; yakit: Fuel; katsayi: number }[] }>;
   rows: PriceRow[];
   changes: (PumpChange & { estimate: FuelRow | null })[];
   statusText: string;
@@ -595,9 +596,26 @@ export default function ZamTahminiPage() {
               Resmi hesaptaki gibi bugünkü değer son 5 kapanışın ortalamasıdır. Resmi değer girildiyse tahmin
               onun üzerine, o günden beri ortalamadaki değişim eklenerek bulunur; girilmediyse ortalama, son pompa
               değişikliğinin karar günündeki ortalamayla kıyaslanır.
-              Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır (motorin ~1,3, benzin ~0,95). Eşel mobil
+              Katsayı, hesaplanan tutarın pompaya ne kadar yansıdığıdır; gerçekleşen son değişikliklerden
+              kendiliğinden bulunur, buradaki katsayılar yalnız yeterli örnek yokken kullanılır. Eşel mobil
               uygulanırsa, zammın devletin ÖTV&apos;den karşıladığı payı girin.
             </p>
+            {data.katsayi && (
+              <p className="text-xs text-muted-foreground">
+                {data.katsayi.motorin.otomatik ? (
+                  <>
+                    Şu an kullanılan katsayı: <b className="text-foreground">{num(data.katsayi.motorin.deger, 2)}</b> (son{" "}
+                    {data.katsayi.motorin.ornekler.length} değişikliğin ortancası:{" "}
+                    {data.katsayi.motorin.ornekler
+                      .map((o) => `${fmtDay(o.tarih)} ${o.yakit === "motorin" ? "motorin" : "benzin"} ${num(o.katsayi, 2)}`)
+                      .join(", ")}
+                    ).
+                  </>
+                ) : (
+                  <>Henüz yeterli örnek yok; yukarıdaki katsayılar kullanılıyor.</>
+                )}
+              </p>
+            )}
             <button
               onClick={() =>
                 post({ action: "config", ...cfg }).then((d) => d && setMsg({ ok: true, text: "Ayarlar kaydedildi." }))
