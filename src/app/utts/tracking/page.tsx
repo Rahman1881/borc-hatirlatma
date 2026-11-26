@@ -15,11 +15,36 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import { FileSpreadsheet } from "lucide-react";
+import { exportUttsRowsToExcel } from "@/lib/utts-excel";
 
 type UttsRow = Record<string, unknown>;
 
 const PAGE_SIZE = 50;
 const API_PAGE_SIZE = 500;
+// UTTS tek sorguda en çok 30 günlük aralık kabul ediyor; uzun aralıklar parçalara bölünür.
+const UTTS_MAX_DAYS = 30;
+const MAX_RANGE_DAYS = 366;
+
+function addDays(iso: string, days: number) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function daysBetween(start: string, end: string) {
+  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+}
+
+// [start, end] aralığını en çok 30 günlük parçalara böler.
+function dateChunks(start: string, end: string) {
+  const chunks: { start: string; end: string }[] = [];
+  for (let s = start; s <= end; s = addDays(s, UTTS_MAX_DAYS)) {
+    const e = addDays(s, UTTS_MAX_DAYS - 1);
+    chunks.push({ start: s, end: e < end ? e : end });
+  }
+  return chunks;
+}
 
 const statusLabels: Record<string, string> = {
   "5": "Fiziksel Montaj Tamamlandı",
@@ -167,7 +192,10 @@ function totalPages(length: number) {
 export default function UttsTrackingPage() {
   const [hasCredentials, setHasCredentials] = useState(false);
   const [fetching, setFetching] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [rows, setRows] = useState<UttsRow[]>([]);
+  const [fetchedRange, setFetchedRange] = useState<{ start: string; end: string } | null>(null);
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState({
     startActivationDate: today(),
@@ -220,45 +248,86 @@ export default function UttsTrackingPage() {
       return;
     }
 
+    if (filters.endActivationDate < filters.startActivationDate) {
+      toast.error("Bitiş tarihi başlangıçtan önce olamaz");
+      return;
+    }
+    if (daysBetween(filters.startActivationDate, filters.endActivationDate) > MAX_RANGE_DAYS) {
+      toast.error("En çok 1 yıllık aralık seçin");
+      return;
+    }
+
     setFetching(true);
     try {
       const collected: UttsRow[] = [];
+      const chunks = dateChunks(filters.startActivationDate, filters.endActivationDate);
 
-      for (let pageNumber = 1; pageNumber <= 20; pageNumber++) {
-        const params = new URLSearchParams({
-          pageNumber: String(pageNumber),
-          pageSize: String(API_PAGE_SIZE),
-          startActivationDate: filters.startActivationDate,
-          endActivationDate: filters.endActivationDate,
-          vehicleOrderInstallationStatus: filters.vehicleOrderInstallationStatus,
-        });
+      for (const [index, chunk] of chunks.entries()) {
+        if (chunks.length > 1) setProgress(`${index + 1}/${chunks.length}`);
+        for (let pageNumber = 1; pageNumber <= 20; pageNumber++) {
+          const params = new URLSearchParams({
+            pageNumber: String(pageNumber),
+            pageSize: String(API_PAGE_SIZE),
+            startActivationDate: chunk.start,
+            endActivationDate: chunk.end,
+            vehicleOrderInstallationStatus: filters.vehicleOrderInstallationStatus,
+          });
 
-        const res = await fetch(`/api/utts/installations?${params}`);
-        const data = await res.json();
+          const res = await fetch(`/api/utts/installations?${params}`);
+          const data = await res.json();
 
-        if (!res.ok || data.error) {
-          toast.error(data.error || "UTTS montaj verileri alınamadı");
-          return;
+          if (!res.ok || data.error) {
+            toast.error(data.error || "UTTS montaj verileri alınamadı");
+            return;
+          }
+
+          const pageRows = extractRows(data.data);
+          collected.push(...pageRows);
+
+          if (pageRows.length < API_PAGE_SIZE) break;
         }
-
-        const pageRows = extractRows(data.data);
-        collected.push(...pageRows);
-
-        if (pageRows.length < API_PAGE_SIZE) break;
       }
 
+      // Parçaların sınırında aynı kayıt iki kez gelirse bir kez say.
+      const seen = new Set<string>();
+      const unique = collected.filter((row) => {
+        const key = getText(row, "vehicleOrderInstallationId") || getText(row, "installationCode");
+        if (!key) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
       const filteredRows = filterRowsByDate(
-        collected,
+        unique,
         filters.startActivationDate,
         filters.endActivationDate
       );
       setRows(filteredRows);
+      setFetchedRange({ start: filters.startActivationDate, end: filters.endActivationDate });
       setPage(1);
       toast.success(`${filteredRows.length} montaj kaydı alındı`);
     } catch {
       toast.error("UTTS montaj takip verileri alınırken hata oluştu");
     } finally {
       setFetching(false);
+      setProgress("");
+    }
+  };
+
+  const exportExcel = async () => {
+    if (rows.length === 0 || !fetchedRange) return;
+    setExporting(true);
+    try {
+      const range =
+        fetchedRange.start === fetchedRange.end
+          ? fetchedRange.start
+          : `${fetchedRange.start}_${fetchedRange.end}`;
+      await exportUttsRowsToExcel(rows, `utts-montajlar_${range}.xlsx`);
+    } catch {
+      toast.error("Excel dosyası oluşturulamadı");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -268,7 +337,7 @@ export default function UttsTrackingPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Montaj Takip</h2>
           <p className="text-muted-foreground">
-            Günlük veya seçili tarih aralığındaki UTTS montaj işlemlerini takip edin.
+            Günlük veya seçili tarih aralığındaki UTTS montaj işlemlerini takip edin. 30 günden uzun aralıklar parça parça çekilir.
           </p>
         </div>
         <Badge variant={hasCredentials ? "default" : "secondary"}>
@@ -321,7 +390,7 @@ export default function UttsTrackingPage() {
                 disabled={fetching || !hasCredentials}
                 className="w-full"
               >
-                {fetching ? "Veriler Alınıyor..." : "Montajları Getir"}
+                {fetching ? `Veriler Alınıyor...${progress ? ` (${progress})` : ""}` : "Montajları Getir"}
               </Button>
             </div>
           </div>
@@ -444,7 +513,19 @@ export default function UttsTrackingPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Montaj İşlemleri</CardTitle>
-            <Badge variant="secondary">{rows.length} kayıt</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">{rows.length} kayıt</Badge>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={exportExcel}
+                disabled={rows.length === 0 || exporting || fetching}
+                title="UTTS'den gelen bütün bilgileri (telefon, e-posta, adres, vergi bilgileri dahil) Excel'e aktarır"
+              >
+                <FileSpreadsheet className="size-4" />
+                {exporting ? "Hazırlanıyor..." : "Excel'e Aktar"}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
